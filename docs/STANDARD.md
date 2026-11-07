@@ -1,0 +1,170 @@
+# Project standard
+
+Version: 1
+
+## Documents
+
+| File | Owns |
+|---|---|
+| `CONSTITUTION.md` | Purpose, boundaries, principles, evidence, contributions, amendment and a version log |
+| `docs/STANDARD.md` | Build, review, approval and CI rules. It is an exact copy with a version number. |
+| `AGENTS.md` | Layout, the check command and the review guidelines of the project |
+| `CLAUDE.md`, `GEMINI.md` | Imports only |
+
+Each constitution has the same sections and the same governance block. For nookku, koodam and groundgate, move the existing text from their README, `SPEC.md` and `AGENTS.md`. Do not write new policy.
+
+A harness loads instructions only from its checkout. Thus, the rule text must be a local copy.
+
+## Builds
+
+1. Each change starts from an issue.
+2. The harness adds `agent:claude`, `agent:codex` or `agent:agy` to the issue. The first label wins.
+3. The branch name shows the harness and the issue.
+4. `make check` runs the local checks in each repository.
+
+The label `agent:claude-code` in nookku becomes `agent:claude`. Open branches keep their names until they merge.
+
+## Reviews
+
+| Builder | Code reviewer | Security reviewer | Security fallback |
+|---|---|---|---|
+| Claude Code | Codex app | Codex security review | agy, with a security prompt |
+| Codex | Claude workflow | Codex security review | Claude workflow, with a security prompt |
+| agy | Claude workflow | Codex security review | Claude workflow, with a security prompt |
+| No harness | Codex app | Codex security review | Claude workflow, with a security prompt |
+
+- If the code reviewer is not available, agy does the review. If agy built the change or is not available, the owner does a manual review.
+- Ask one time for each head commit, and at most 3 times for each PR.
+- Fix each finding, or write the reason in the PR.
+- A code review is valid only for the current head and base.
+- The fallback starts if Codex reports a limit, or gives no result in 30 minutes. The 30 minutes is an estimate.
+- CI cannot verify a local agy result. For a local agy security result, the owner adds the `security-reviewed` label.
+
+A Codex-built PR gets a Codex security review as an exception to the rule that a harness does not review its own change. The exception is limited: Claude Code still does the code review, and the security review is a separate run.
+
+## Review request relay
+
+Codex refuses a request from the machine account, because that account has no Codex account. Thus, a workflow posts each Codex request as the owner. The agent starts the workflow, but the agent does not hold the owner token.
+
+- The workflow uses `pull_request_target`, so it runs from `main`.
+- The workflow reads a fine-grained owner token from an environment that only `main` can deploy to.
+- The workflow does not check out or run PR code.
+- The workflow reads the PR comments first. It enforces one request for each head commit and at most 3 for each PR.
+- A code review request is `@codex review`, with `Head: <short SHA>` on the next line. A security review request is a separate comment with the exact text `@codex security review`.
+- For a fork PR, the workflow also requires the `ready-for-review` label.
+
+The relay has these limits:
+
+- The scope stays agent errors. A branch cannot read the secret, but a merged workflow can. Thus, `.github/` stays level 1.
+- A token with pull request write access can also approve a PR as the owner. Use a token with issues write access only, if this token can post the request.
+- Only the user who posted the request can read the security report. With the relay, this user is the owner. The machine account can read only the result in the receipt.
+
+## Security review trigger
+
+The gate decides from the changed paths. If no listed path changed, the check passes and an agent does not ask for a review.
+
+The shared categories are:
+
+- workflows, release steps and gate tools;
+- agent instructions and settings, and `docs/STANDARD.md`;
+- dependency manifests and lock files;
+- credentials, logins and RBAC;
+- named boundaries for untrusted input, commands, network and file paths.
+
+Each project names its boundary files. It does not list all of its source. A code reviewer can report that a security review is necessary. Then the author adds the `security-needed` label, and the gate requires the review.
+
+After a clean security review, a new push needs a new review only if the new commits touch a listed path.
+
+## Docs-only PRs
+
+A docs-only PR skips the project jobs, and `ci-ok` still passes. The project check always runs. Do not use `paths-ignore`, because a required check can then stay pending.
+
+These `.md` files are not docs:
+
+- agent instructions, `CONSTITUTION.md`, `docs/STANDARD.md` and skill files;
+- `SPEC.md` and contract files;
+- docs that a project test runs.
+
+## Approvals
+
+| Level | Applies to | Who approves | Control |
+|---|---|---|---|
+| 0, routine | Other PRs | No person. The author agent merges. | Required checks |
+| 1, owner | The paths below, and a reviewer disagreement | Owner | `CODEOWNERS` approval |
+| 2, outward | Tag, release, package, visibility, outreach | Owner, one approval for each step | Tag ruleset, `pypi` environment |
+
+Filing a sanitized issue needs no approval.
+
+Level 1 paths in all projects:
+
+- `CONSTITUTION.md`, `docs/STANDARD.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`;
+- `.github/`, `.agents/`, `.claude/`, `.codex/`;
+- the gate tools;
+- dependency manifests and lock files.
+
+Added level 1 paths:
+
+| Project | Paths |
+|---|---|
+| koodam | `/api/`, `/config/rbac/`, `/internal/gateway/`, `/charts/` |
+| aavanam | `SPEC.md`, `docs/contracts/`, `conformance/` |
+| groundgate | `SPEC.md`, `conformance/` |
+| nookku | `SPEC.md`, the relay path, the record format |
+| entelos | `docs/contracts/`, the lifecycle specs (a first estimate) |
+
+## CI and GitHub settings
+
+Each repository has the same 4 required checks:
+
+| Check | Purpose | Source |
+|---|---|---|
+| `ci-ok` | Collects the jobs of the project, and accepts a skipped job | Project jobs, shared skeleton |
+| `cross-review` | Requires a clean review of the current head from the other harness | Shared gate |
+| `security-review` | Requires a security review if the trigger applies | Shared gate |
+| `acceptance` | Controls outside PRs | Shared gate |
+
+- The gates run from the base branch, so a PR cannot change its own gate.
+- Package the gates as a composite action, so that the tools and the workflow cannot differ.
+- Parse each workflow in CI. In the relay test, an invalid workflow passed the project check and both Codex reviews.
+- Use SHA pins, `permissions: {}`, job timeouts and `persist-credentials: false`. Enable Dependabot for actions.
+- The Claude workflow uses the hardened aavanam form in each repository.
+- The main ruleset has squash only, linear history and resolved threads. Remove classic protection.
+- The only bypass on `main` is the admin role, in PR-only mode. The owner needs it for a level 1 PR that the owner writes, because nobody else can approve it.
+- Each repository uses the groundgate tag ruleset.
+- Delete the branch after merge, and enable auto-merge after `cross-review` is required.
+- The up-to-date rule is off by default. koodam can keep it as a recorded exception, because of its generated files.
+
+The gates read a Codex result with these rules:
+
+- Accept a result only if the comment author is `chatgpt-codex-connector[bot]`, because any user can write the same text.
+- Read `commit_sha` and `status` from the `codex-review-state:v1` data in the summary comment.
+- Do not use `has_unresolved_findings` alone. The value stayed `true` in the relay test after the threads were resolved.
+- For a security review, read the receipt text. The value of `has_any_findings` was `null` after a completed security review.
+- If the receipt format changes, fail closed and use the fallback, because Codex calls its security review experimental.
+
+## Fork PRs
+
+Stage 1 is automatic and uses no credits. The `acceptance` check requires:
+
+- a linked open issue with the label `accepted`, and without the label `decision`;
+- about 400 changed lines or fewer, without generated files;
+- no change to protected paths, unless the owner approved it;
+- a PR description that follows the template.
+
+Stage 2 is the owner's decision. The owner reads the diff, then adds `ready-for-review`. No review starts before this.
+
+- The label allows one code review, and one security review if the trigger applies.
+- A push removes the label.
+- Agents never add the label.
+- CI needs approval for all outside contributors.
+
+## Worktrees
+
+- A worktree that an app makes stays at the location of the app.
+- A worktree that a person or agent makes by hand goes to the `worktrees/` folder of the owner's local work root, as the global instructions say.
+- Each repository ignores `.claude/worktrees`.
+- The author removes the worktree after the merge.
+
+The public standard does not name the local path. A public repository must not hold a personal path.
+
+The current Claude app location is inside the checkout. There, a harness can load the instruction files of the parent checkout. The owner can change this location in the app settings.
