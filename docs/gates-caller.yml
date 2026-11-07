@@ -1,0 +1,66 @@
+name: Gates
+# Copy this file to .github/workflows/gates.yml of the project. Replace the SHA of the gates action with a full SHA of
+# mohanraj00/.github on main. Do not use a tag or a branch.
+# pull_request_target runs this file from the base branch. The checkout is the base SHA, so .github/gates.json and the
+# PR template come from the base branch. Do not check out or run the PR head here.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
+permissions: {}
+# Runs for one PR wait in order. Each run reads the live PR and checks that each label has an approval record for the
+# current head and base, so the gate does not depend on one event.
+concurrency:
+  group: gates-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  cross-review:
+    name: cross-review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # The gate reads the PR, posts approval records and removes stale labels. The label endpoints are under /issues.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: mohanraj00/.github/gates@0000000000000000000000000000000000000000 # Replace with a full SHA of mohanraj00/.github on main.
+        with:
+          check: cross-review
+  security-review:
+    name: security-review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # The gate reads the PR, posts approval records and removes stale labels. The label endpoints are under /issues.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: mohanraj00/.github/gates@0000000000000000000000000000000000000000 # Replace with a full SHA of mohanraj00/.github on main.
+        with:
+          check: security-review
+  acceptance:
+    name: acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # The gate reads the PR, posts approval records and removes stale labels. The label endpoints are under /issues.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: mohanraj00/.github/gates@0000000000000000000000000000000000000000 # Replace with a full SHA of mohanraj00/.github on main.
+        with:
+          check: acceptance

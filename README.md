@@ -1,2 +1,44 @@
 # .github
 Shared project standard and CI gates
+
+## Shared gates
+
+The composite action in [`gates/`](gates/action.yml) holds the gates `cross-review`, `security-review` and `acceptance` of [the standard](docs/STANDARD.md). The tools are next to `action.yml`, so the workflow and the tools come from the same SHA. The tools use the Python standard library only, and they call only the GitHub API.
+
+### Adopt the gates in a project
+
+1. Copy [`docs/gates-caller.yml`](docs/gates-caller.yml) to `.github/workflows/gates.yml`. Replace the SHA of the gates action with a full SHA of this repository on `main`. Do not use a tag or a branch.
+2. Copy [`docs/gates-rerun.yml`](docs/gates-rerun.yml) to `.github/workflows/gates-rerun.yml`.
+3. Add `.github/gates.json` with the project rules. The keys are below. The gate reads this file from the base branch, so a PR cannot change the config of its own gate.
+4. Put the project jobs in the skeleton [`docs/ci-ok.yml`](docs/ci-ok.yml), and use the same SHA.
+5. If the project has the Claude review workflow, copy [`gates/claude_review.py`](gates/claude_review.py) to `tools/claude_review.py`. Give the post job the `--kind` argument, as [`docs/claude-review.yml`](docs/claude-review.yml) shows. The gates accept only the marker that this post job writes.
+6. In the main ruleset, require the 4 checks `ci-ok`, `cross-review`, `security-review` and `acceptance`.
+7. Remove the old gate workflows and tools of the project, for example `pr-policy.yml` and `tools/pr_policy.py`. The gates also read the approval records of `pr_policy.py`.
+
+The keys of `.github/gates.json` are lists of `fnmatch` patterns. A `*` also matches `/`.
+
+| Key | Contents |
+|---|---|
+| `version` | `1` |
+| `code` | The paths that run the project jobs. A path in a security or level 1 list also runs them. |
+| `security_sources` | The executable sources that are security relevant |
+| `not_security` | The paths of `security_sources` that are not security relevant, for example tests |
+| `boundaries` | The gate tools and the named boundary files. These are always security relevant. |
+| `level1` | The gate tools and the added level 1 paths of the project |
+| `generated` | The generated files. The fork line limit does not count them. |
+
+The action holds the shared categories: the workflows, the agent instructions and settings, `docs/STANDARD.md`, and the dependency manifests and lock files.
+
+### What each gate does
+
+- `cross-review` finds the builder from the first `agent:*` label of the linked issue, then from the branch prefix. A Claude-built PR, or a PR with no harness, needs a completed Codex code review of the current head. A Codex-built or agy-built PR needs a Claude workflow review of the current head with `Findings: 0`. The `cross-reviewed` label with an approval record is the fallback for an agy or owner review.
+- `security-review` passes if no listed path changed. Otherwise it needs a clean Codex security receipt, a clean Claude security review, or the `security-reviewed` label with an approval record. After a clean review, a new push needs a new review only if the new commits touch a listed path. The `security-needed` label forces a review of the current head.
+- `acceptance` applies stage 1 of "Fork PRs" to a fork PR. For each PR, it fails if a level 1 path changed or if the PR has the `owner-needed` label. Then the owner merges the PR with the admin bypass, and auto-merge cannot merge it. A push removes the `ready-for-review` label from a fork PR.
+
+When the owner adds `accepted`, `ready-for-review`, `security-reviewed` or `cross-reviewed` to a PR, the gate posts an approval record for that head and base. A label without a record for the current head and base is not valid, and the gate removes it.
+
+If the API gives an error, or a receipt has an unknown format, the gate fails. It does not pass. A change to the labels of a linked issue does not start the gates. Edit the PR, or run the failed jobs again.
+
+### Known limit
+
+The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed` and `ready-for-review` depend on the rule that agents never add them.

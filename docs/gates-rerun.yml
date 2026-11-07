@@ -1,0 +1,42 @@
+name: Gates rerun
+# Copy this file to .github/workflows/gates-rerun.yml of the project. It never checks out or runs PR code.
+# When a reviewer posts a result, this workflow runs the failed jobs of the Gates workflow again for the current head,
+# so the gates can read the new result. The gates decide. This file only starts the run.
+# - issue_comment: the Codex bot posts a review result. A comment from github-actions[bot] also starts it, if a token
+#   other than the workflow token posted the comment.
+# - workflow_run: a comment that the workflow token posts does not start a workflow. Thus the completion of the Claude
+#   review workflow starts this run. That event does not name the PR, so the job checks each open PR.
+on:
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: [Claude review]
+    types: [completed]
+permissions: {}
+jobs:
+  rerun:
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      (github.event.comment.user.login == 'chatgpt-codex-connector[bot]' || github.event.comment.user.login == 'github-actions[bot]')) ||
+      github.event_name == 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Run the failed gate jobs again
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          if [ -n "$PR" ]; then prs=$PR; else prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number'); fi
+          for pr in $prs; do
+            head=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
+            run=$(gh api "repos/$REPO/actions/workflows/gates.yml/runs?head_sha=$head&event=pull_request_target&per_page=1" --jq '.workflow_runs[0].id // empty')
+            # A run that is in progress can read the comments before the reviewer posts, so wait for it to complete.
+            if [ -n "$run" ]; then gh run watch "$run" -R "$REPO" --interval 15 > /dev/null || true; fi
+            if [ -n "$run" ] && [ "$(gh api "repos/$REPO/actions/runs/$run" --jq .conclusion)" != failure ]; then run=; fi
+            if [ -n "$run" ]; then gh api -X POST "repos/$REPO/actions/runs/$run/rerun-failed-jobs"; else echo "No failed gate run for PR $pr at head $head."; fi
+          done
