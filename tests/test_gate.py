@@ -42,7 +42,8 @@ class Fake:
     """The GitHub API of one PR."""
 
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
-                 comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True):
+                 comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
+                 admins=('mohanraj00',), actors=None, objects=None):
         self.repo = REPO
         self.state = {'labels': [{'name': x} for x in labels], 'body': body,
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
@@ -55,7 +56,20 @@ class Fake:
         self.threads = threads
         self.compares = compare or {}
         self.changed = base_changed
+        self.admins = set(admins)
+        self.actors = actors if actors is not None else {5: 'mohanraj00'}
+        self.objects = objects if objects is not None else [HEAD, OLD]
         self.posted, self.removed = [], []
+
+    def is_admin(self, login):
+        return login in self.admins
+
+    def label_actor(self, issue, label):
+        return self.actors.get(issue)
+
+    def resolve(self, commit):
+        found = [x for x in self.objects if x.startswith(commit)]
+        return found[0] if len(found) == 1 else None
 
     def pr(self):
         return self.state
@@ -89,8 +103,8 @@ class Fake:
         self.removed.append(label)
 
 
-def event(action='opened', label=None, head=HEAD):
-    found = {'action': action, 'repository': {'full_name': REPO},
+def event(action='opened', label=None, head=HEAD, sender='mohanraj00'):
+    found = {'action': action, 'repository': {'full_name': REPO}, 'sender': {'login': sender},
              'pull_request': {'number': 7, 'head': {'sha': head}, 'base': {'ref': 'main'}}}
     if label:
         found['label'] = {'name': label}
@@ -209,20 +223,20 @@ class SecurityTest(unittest.TestCase):
 
     def test_a_clean_review_stays_valid_if_the_new_commits_touch_no_listed_path(self):
         comments = [comment(gate.CODEX, CLEAN_RECEIPT % OLD[:10])]
-        fake = Fake(files=['src/a.py'], comments=comments, compare={OLD[:10]: (True, ['README.md'], True)})
+        fake = Fake(files=['src/a.py'], comments=comments, compare={OLD: (True, ['README.md'], True)})
         passed, message, _ = check('security-review', fake)
         self.assertTrue(passed, message)
         self.assertIn('the later commits touch no listed path', message)
         for result in ((True, ['src/b.py'], True), (False, ['README.md'], True), (True, ['README.md'], False)):
             with self.subTest(result=result):
-                fake = Fake(files=['src/a.py'], comments=comments, compare={OLD[:10]: result})
+                fake = Fake(files=['src/a.py'], comments=comments, compare={OLD: result})
                 self.assertFalse(check('security-review', fake)[0])
 
     def test_security_needed_forces_a_review_of_the_head(self):
         fake = Fake(files=['README.md'], labels=['security-needed'])
         self.assertFalse(check('security-review', fake)[0])
         fake = Fake(files=['README.md'], labels=['security-needed'], comments=[comment(gate.CODEX, CLEAN_RECEIPT % OLD[:10])],
-                    compare={OLD[:10]: (True, ['README.md'], True)})
+                    compare={OLD: (True, ['README.md'], True)})
         self.assertFalse(check('security-review', fake)[0])
         fake = Fake(files=['README.md'], labels=['security-needed'], comments=[comment(gate.CODEX, CLEAN_RECEIPT % HEAD[:10])])
         self.assertTrue(check('security-review', fake)[0])
@@ -253,6 +267,27 @@ class SecurityTest(unittest.TestCase):
         fake = Fake(files=['src/a.py'], labels=['security-reviewed'])
         check('security-review', fake, event('labeled', 'cross-reviewed'))
         self.assertEqual(fake.posted, [])
+
+    def test_a_label_from_a_user_who_is_not_an_admin_makes_no_record(self):
+        for sender in ('triage-user', ''):
+            with self.subTest(sender=sender):
+                fake = Fake(files=['src/a.py'], labels=['security-reviewed'])
+                self.assertFalse(check('security-review', fake, event('labeled', 'security-reviewed', sender=sender))[0])
+                self.assertEqual((fake.posted, fake.removed), ([], ['security-reviewed']))
+        fake = Fake(ref='agy/7', issues=[], labels=['cross-reviewed'])
+        self.assertFalse(check('cross-review', fake, event('labeled', 'cross-reviewed', sender='triage-user'))[0])
+        self.assertEqual(fake.posted, [])
+
+    def test_a_receipt_prefix_must_name_one_full_commit(self):
+        # A different commit with the same 10 hex digits as the reviewed commit does not match.
+        twin = HEAD[:10] + 'c' * 30
+        receipt = [comment(gate.CODEX, CLEAN_RECEIPT % HEAD[:10])]
+        self.assertFalse(check('security-review', Fake(files=['src/a.py'], head=twin, comments=receipt, objects=[HEAD, twin]))[0])
+        self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=receipt, objects=[HEAD, twin]))[0])
+        self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=receipt, objects=[]))[0])
+        fake = Fake(files=['src/a.py'], head=twin, comments=receipt, objects=[HEAD],
+                    compare={HEAD: (True, ['src/b.py'], True)})
+        self.assertFalse(check('security-review', fake)[0])
 
     def test_a_clean_claude_security_review_passes(self):
         body = comment_body('success', HEAD, 'Findings: 0\nNo defect.', 'security')
@@ -374,6 +409,13 @@ class AcceptanceTest(unittest.TestCase):
                 passed, message, _ = check('acceptance', Fake(fork=True, issues=issues))
                 self.assertFalse(passed)
                 self.assertIn('label accepted', message)
+
+    def test_the_accepted_issue_label_needs_an_admin(self):
+        for actors in ({5: 'triage-user'}, {}):
+            with self.subTest(actors=actors):
+                passed, message, _ = check('acceptance', Fake(fork=True, actors=actors))
+                self.assertFalse(passed)
+                self.assertIn('An admin must add the accepted label.', message)
 
     def test_a_fork_pr_has_a_line_limit_without_generated_files(self):
         big = {'path': 'src/a.py', 'previous': None, 'lines': 401}

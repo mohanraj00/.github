@@ -196,6 +196,29 @@ class GitHub:
         return sum(1 for x in threads['nodes'] if not x['isResolved'] and x['comments']['nodes']
                    and (x['comments']['nodes'][0]['author'] or {}).get('login') in (CODEX, CODEX[:-5]))
 
+    def is_admin(self, login):
+        """Only a user with the admin role can approve. A triage or write user can add labels, but not approve."""
+        data = self.call('GET', '/repos/%s/collaborators/%s/permission' % (self.repo, urllib.parse.quote(login, safe='')))
+        return data.get('permission') == 'admin'
+
+    def label_actor(self, issue, label):
+        """Return the login that added the label to the issue last, or None."""
+        events = self.all_pages('/repos/%s/issues/%d/events' % (self.repo, issue))
+        events.sort(key=lambda x: (x['created_at'], x['id']))
+        found = [x for x in events if x.get('event') == 'labeled' and (x.get('label') or {}).get('name') == label]
+        return ((found[-1].get('actor') or {}).get('login')) if found else None
+
+    def resolve(self, commit):
+        """Return the full SHA of a commit prefix, or None if the prefix is unknown or names more than one object."""
+        try:
+            data = self.call('GET', '/repos/%s/commits/%s' % (self.repo, commit))
+        except urllib.error.HTTPError as error:
+            if error.code in (404, 409, 422):
+                return None
+            raise
+        sha = (data or {}).get('sha') or ''
+        return sha if re.fullmatch(r'[0-9a-f]{40}', sha) and sha.startswith(commit) else None
+
     def compare(self, old, new):
         """Return (old is an ancestor of new, changed paths, complete)."""
         data = self.call('GET', '/repos/%s/compare/%s...%s' % (self.repo, old, new))
@@ -366,13 +389,17 @@ def security_review(gh, config, pr, paths, complete, records, comments, changed)
         lines.append('The security-needed label requires a security review of the current head.')
 
     def covers(commit):
-        """A review of an earlier commit stays valid if the later commits touch no listed path."""
-        if head.startswith(commit):
+        """A review of an earlier commit stays valid if the later commits touch no listed path.
+        A Codex receipt names a prefix. The gate resolves it to one full SHA, so a commit with the same prefix does not match."""
+        full = commit if len(commit) == 40 else gh.resolve(commit)
+        if not full:
+            return False
+        if full == head:
             return True
         if forced:
             return False
-        ancestor, later, full = gh.compare(commit, head)
-        return ancestor and full and not classify(config, later)['security']
+        ancestor, later, complete = gh.compare(full, head)
+        return ancestor and complete and not classify(config, later)['security']
 
     def name(commit):
         return 'head %s' % head[:12] if head.startswith(commit) else 'commit %s, and the later commits touch no listed path' % commit[:12]
@@ -427,8 +454,9 @@ def acceptance(gh, config, pr, files, complete, records, template):
     if fork:
         lines.append('This PR comes from the fork %s. Stage 1 of "Fork PRs" applies.' % show((pr['head'].get('repo') or {}).get('full_name') or 'that GitHub deleted'))
         issues = gh.linked_issues()
-        if not any(x['open'] and x['repo'] == gh.repo and 'accepted' in x['labels'] and 'decision' not in x['labels'] for x in issues):
-            problems.append('Link an open issue that has the label accepted and not the label decision.')
+        accepted = [x for x in issues if x['open'] and x['repo'] == gh.repo and 'accepted' in x['labels'] and 'decision' not in x['labels']]
+        if not any(gh.is_admin(gh.label_actor(x['number'], 'accepted') or '') for x in accepted):
+            problems.append('Link an open issue that has the label accepted and not the label decision. An admin must add the accepted label.')
         lines_changed = sum(x['lines'] for x in files if not match(x['path'], config['generated']))
         if not complete:
             problems.append('The PR has more files than GitHub lists.')
@@ -469,7 +497,9 @@ def run(check, gh, event, config, template=''):
     comments = gh.comments()
     records = read_records(comments)
     label = (event.get('label') or {}).get('name')
-    if event.get('action') == 'labeled' and label in BIND[check]:
+    # Only an admin label makes a record. A label from another user has no record, so the gate removes it.
+    sender = (event.get('sender') or {}).get('login') or ''
+    if event.get('action') == 'labeled' and label in BIND[check] and sender and gh.is_admin(sender):
         # The labeled event holds the head and base at the time of the label, not at the time of this run.
         old = event['pull_request']
         head, base = old['head']['sha'], old['base']['ref']

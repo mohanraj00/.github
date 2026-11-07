@@ -35,7 +35,7 @@ The action holds the shared categories: the workflows, the agent instructions an
 - `security-review` passes if no listed path changed. Otherwise it needs a clean Codex security receipt, a clean Claude security review, or the `security-reviewed` label with an approval record. After a clean review, a new push needs a new review only if the new commits touch a listed path. The `security-needed` label forces a review of the current head.
 - `acceptance` applies stage 1 of "Fork PRs" to a fork PR. For each PR, it fails if a level 1 path changed or if the PR has the `owner-needed` label. Then the owner merges the PR with the admin bypass, and auto-merge cannot merge it. A push removes the `ready-for-review` label from a fork PR.
 
-When the owner adds `accepted`, `ready-for-review`, `security-reviewed` or `cross-reviewed` to a PR, the gate posts an approval record for that head and base. A label without a record for the current head and base is not valid, and the gate removes it.
+When a user with the admin role adds `accepted`, `ready-for-review`, `security-reviewed` or `cross-reviewed` to a PR, the gate posts an approval record for that head and base. A label from a triage or write user gets no record. For a fork PR, an admin must add the `accepted` label of the linked issue. A label without a record for the current head and base is not valid, and the gate removes it.
 
 If the API gives an error, or a receipt has an unknown format, the gate fails. It does not pass. A change to the labels of a linked issue does not start the gates. Edit the PR, or run the failed jobs again.
 

@@ -7,10 +7,11 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
 permissions: {}
-# Runs for one PR wait in order. Each run reads the live PR and checks that each label has an approval record for the
-# current head and base, so the gate does not depend on one event.
+# Runs for one PR wait in order. A new pending run replaces an older pending run in the same group. Each run reads the
+# live PR, so a replaced run loses no state. A labeled run writes the approval record, so each label has its own group.
+# Then a pending run for one label cannot replace the run for a different label.
 concurrency:
-  group: gates-${{ github.event.pull_request.number }}
+  group: gates-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name || 'state' }}
   cancel-in-progress: false
 jobs:
   cross-review:
