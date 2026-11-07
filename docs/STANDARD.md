@@ -1,6 +1,6 @@
 # Project standard
 
-Version: 2
+Version: 3
 
 ## Documents
 
@@ -53,22 +53,13 @@ The review guidelines in `AGENTS.md` are short. They state what a failure looks 
 
 A Codex-built PR gets a Codex security review as an exception to the rule that a harness does not review its own change. The exception is limited: Claude Code still does the code review, and the security review is a separate run.
 
-## Review request relay
+## Review requests
 
-Codex refuses a request from the machine account, because that account has no Codex account. Thus, a workflow posts each Codex request as the owner. The agent starts the workflow, but the agent does not hold the owner token.
+The agents use the owner login. An agent posts each review request in a PR comment.
 
-- The workflow uses `pull_request_target`, so it runs from `main`.
-- The workflow reads a fine-grained owner token from an environment that only `main` can deploy to.
-- The workflow does not check out or run PR code.
-- The workflow reads the PR comments first. It enforces one request for each head commit and at most 3 for each PR.
 - A code review request is `@codex review`, with `Head: <short SHA>` on the next line. A security review request is a separate comment with the exact text `@codex security review`.
-- For a fork PR, the workflow also requires the `ready-for-review` label.
-
-The relay has these limits:
-
-- The scope stays agent errors. A branch cannot read the secret, but a merged workflow can. Thus, `.github/` stays level 1.
-- A token with pull request write access can also approve a PR as the owner. Use a token with issues write access only, if this token can post the request.
-- Only the user who posted the request can read the security report. With the relay, this user is the owner. The machine account can read only the result in the receipt.
+- A Claude request is one of the two exact texts in `docs/REVIEW.md` of the project.
+- For a fork PR, ask for a review only after the owner adds the `ready-for-review` label.
 
 ## Security review trigger
 
@@ -101,14 +92,14 @@ These `.md` files are not docs:
 | Level | Applies to | Who approves | Control |
 |---|---|---|---|
 | 0, routine | Other PRs | No person. The author agent merges. | Required checks |
-| 1, owner | The paths below, a reviewer disagreement, and the `owner-needed` label | Owner | `CODEOWNERS` approval for a path. The `acceptance` gate for a disagreement or the label. |
+| 1, owner | The paths below, a reviewer disagreement, and the `owner-needed` label | Owner | The owner merges. An agent does not merge. |
 | 2, outward | Tag, release, package, visibility, outreach | Owner, one approval for each step | Tag ruleset, `pypi` environment |
 
 Filing a sanitized issue needs no approval.
 
 - A reviewer can report that a change needs the owner, also for a path that is not on the list. Then the author adds the `owner-needed` label.
-- The approval of an agent or the machine account never counts as the approval of a person.
-- An approval applies to one commit. A new push needs a new approval.
+- An agent uses the owner login, so GitHub cannot tell an agent from the owner. Thus, an agent never approves a PR and never merges a level 1 PR.
+- The owner merges a level 1 PR with the admin bypass, because GitHub does not let the PR author approve it.
 
 Level 1 paths in all projects:
 
@@ -140,11 +131,11 @@ Each repository has the same 4 required checks:
 
 - The gates run from the base branch, so a PR cannot change its own gate.
 - Package the gates as a composite action, so that the tools and the workflow cannot differ.
-- Parse each workflow in CI. In the relay test, an invalid workflow passed the project check and both Codex reviews.
+- Parse each workflow in CI. In a test, an invalid workflow passed the project check and both Codex reviews.
 - Use SHA pins, `permissions: {}`, job timeouts and `persist-credentials: false`. Enable Dependabot for actions.
 - The Claude workflow uses the hardened aavanam form in each repository.
 - The main ruleset has squash only, linear history and resolved threads. It dismisses a stale approval when a push occurs. Remove classic protection.
-- The only bypass on `main` is the admin role, in PR-only mode. The owner needs it for a level 1 PR that the owner writes, because nobody else can approve it.
+- The only bypass on `main` is the admin role, in PR-only mode. The owner uses it to merge a level 1 PR.
 - Each repository uses the groundgate tag ruleset.
 - Delete the branch after merge, and enable auto-merge after `cross-review` is required.
 - The up-to-date rule is off by default. koodam can keep it as a recorded exception, because of its generated files.
@@ -154,7 +145,7 @@ The gates read a Codex result with these rules:
 
 - Accept a result only if the comment author is `chatgpt-codex-connector[bot]`, because any user can write the same text.
 - Read `commit_sha` and `status` from the `codex-review-state:v1` data in the summary comment.
-- Do not use `has_unresolved_findings` alone. The value stayed `true` in the relay test after the threads were resolved.
+- Do not use `has_unresolved_findings` alone. The value stayed `true` in a test after the threads were resolved.
 - For a security review, read the receipt text. The value of `has_any_findings` was `null` after a completed security review.
 - If the receipt format changes, fail closed and use the fallback, because Codex calls its security review experimental.
 
