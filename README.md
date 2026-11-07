@@ -39,6 +39,10 @@ When a user with the admin role adds `accepted`, `ready-for-review`, `security-r
 
 If the API gives an error, or a receipt has an unknown format, the gate fails. It does not pass. A change to the labels of a linked issue does not start the gates. Edit the PR, or run the failed jobs again.
 
+Only an admin can clear the blocking labels `owner-needed`, `security-needed` and the `decision` label of a linked issue. If another user removes one of them, the gate still applies it.
+
+GitHub Actions has no event for a resolved review thread. If you resolve the last Codex thread without a push, run the failed `cross-review` job again, for example with `gh run rerun <run-id> --failed`.
+
 ### Known limit
 
 The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed` and `ready-for-review` depend on the rule that agents never add them.

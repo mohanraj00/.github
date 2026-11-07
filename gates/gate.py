@@ -211,11 +211,11 @@ class GitHub:
         data = self.call('GET', '/repos/%s/collaborators/%s/permission' % (self.repo, urllib.parse.quote(login, safe='')))
         return data.get('permission') == 'admin'
 
-    def last_labeled(self, issue, label):
-        """Return (login, time) of the last labeled event of the label on the issue or PR, or None."""
+    def last_labeled(self, issue, label, kind='labeled'):
+        """Return (login, time) of the last event of this kind (labeled or unlabeled) for the label on the issue or PR, or None."""
         events = self.all_pages('/repos/%s/issues/%d/events' % (self.repo, issue))
         events.sort(key=lambda x: (x['created_at'], x['id']))
-        found = [x for x in events if x.get('event') == 'labeled' and (x.get('label') or {}).get('name') == label]
+        found = [x for x in events if x.get('event') == kind and (x.get('label') or {}).get('name') == label]
         return ((found[-1].get('actor') or {}).get('login'), found[-1]['created_at']) if found else None
 
     def now(self):
@@ -291,6 +291,14 @@ def bound_heads(gh, label, labels, base):
             return heads, not heads and fresh
         gh.sleep(10)
         waited += 10
+
+
+def blocks(gh, issue, label, labels):
+    """Return true if a blocking label applies. Only an admin can clear it: after a removal by another user, it still applies."""
+    if label in labels:
+        return True
+    removed = gh.last_labeled(issue, label, 'unlabeled')
+    return bool(removed) and not gh.is_admin(removed[0] or '')
 
 
 def label_state(gh, label, labels, current):
@@ -427,7 +435,7 @@ def cross_review(gh, pr, comments, changed):
 def security_review(gh, config, pr, paths, complete, comments, changed):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
-    forced = 'security-needed' in labels
+    forced = blocks(gh, gh.number, 'security-needed', labels)
     listed = classify(config, paths)['security']
     if complete and not listed and not forced:
         return True, ['No listed path changed.'], []
@@ -460,8 +468,10 @@ def security_review(gh, config, pr, paths, complete, comments, changed):
     if results and results[-1][0] and results[-1][1] and covers(results[-1][0]):
         commit = results[-1][0]
         return True, lines + ['The Codex security review of %s found no security issues.' % name(commit)], []
+    # The Claude result is a fallback. It does not pass over a Codex result with open findings.
+    codex_open = bool(results) and bool(results[-1][0]) and not results[-1][1]
     claude = claude_results(comments, changed, 'security')
-    if claude and claude[-1][1] == '0' and covers(claude[-1][0]):
+    if not codex_open and claude and claude[-1][1] == '0' and covers(claude[-1][0]):
         return True, lines + ['The Claude security review of %s found no security issues.' % name(claude[-1][0])], []
     drop = []
     if 'security-reviewed' in labels:
@@ -504,7 +514,8 @@ def acceptance(gh, config, pr, files, complete, template):
     if fork:
         lines.append('This PR comes from the fork %s. Stage 1 of "Fork PRs" applies.' % show((pr['head'].get('repo') or {}).get('full_name') or 'that GitHub deleted'))
         issues = gh.linked_issues()
-        accepted = [x for x in issues if x['open'] and x['repo'] == gh.repo and 'accepted' in x['labels'] and 'decision' not in x['labels']]
+        accepted = [x for x in issues if x['open'] and x['repo'] == gh.repo and 'accepted' in x['labels']
+                    and not blocks(gh, x['number'], 'decision', set(x['labels']))]
         if not any(gh.is_admin((gh.last_labeled(x['number'], 'accepted') or ('', ''))[0] or '') for x in accepted):
             problems.append('Link an open issue that has the label accepted and not the label decision. An admin must add the accepted label.')
         lines_changed = sum(x['lines'] for x in files if not match(x['path'], config['generated']))
@@ -528,7 +539,7 @@ def acceptance(gh, config, pr, files, complete, template):
         owner.append('level 1 paths changed: ' + ', '.join(show(x) for x in level1))
     if not complete:
         owner.append('the PR has more files than GitHub lists')
-    if 'owner-needed' in labels:
+    if blocks(gh, gh.number, 'owner-needed', labels):
         owner.append('the PR has the owner-needed label')
     if owner:
         problems.append('This PR is level 1 (%s). The owner merges this PR with the admin bypass, so auto-merge cannot merge it.' % '; '.join(owner))

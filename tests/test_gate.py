@@ -45,10 +45,11 @@ class Fake:
 
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
-                 admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z'):
+                 admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None):
         self.repo, self.number = REPO, 7
         self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
         self.clock = gate.stamp(now)
+        self.unlabeled = unlabeled or {}
         self.slept = 0
         self.state = {'labels': [{'name': x} for x in labels], 'body': body,
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
@@ -70,7 +71,9 @@ class Fake:
     def is_admin(self, login):
         return login in self.admins
 
-    def last_labeled(self, issue, label):
+    def last_labeled(self, issue, label, kind='labeled'):
+        if kind == 'unlabeled':
+            return self.unlabeled.get((issue, label))
         if issue == self.number:
             return self.labeled.get(label)
         return (self.actors[issue], '2026-11-07T09:00:00Z') if issue in self.actors else None
@@ -313,6 +316,19 @@ class SecurityTest(unittest.TestCase):
         self.assertTrue(check('cross-review', fake)[0])
         self.assertEqual((fake.slept, fake.removed), (10, []))
 
+    def test_a_codex_result_with_findings_stops_the_claude_fallback(self):
+        comments = [comment(gate.CODEX, OPEN_RECEIPT % HEAD[:10], '2026-11-07T10:00:00Z'),
+                    comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'security'), '2026-11-07T11:00:00Z')]
+        self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=comments))[0])
+        comments[0] = comment(gate.CODEX, '### Codex Security Review\n\nCommit: x', '2026-11-07T10:00:00Z')
+        self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=comments))[0])  # A malformed receipt permits the fallback.
+
+    def test_only_an_admin_can_clear_security_needed(self):
+        removed = {(7, 'security-needed'): ('triage-user', '2026-11-07T11:00:00Z')}
+        self.assertFalse(check('security-review', Fake(files=['README.md'], unlabeled=removed))[0])
+        removed = {(7, 'security-needed'): ('mohanraj00', '2026-11-07T11:00:00Z')}
+        self.assertTrue(check('security-review', Fake(files=['README.md'], unlabeled=removed))[0])
+
     def test_a_label_from_a_user_who_is_not_an_admin_makes_no_record(self):
         for sender in ('triage-user', ''):
             with self.subTest(sender=sender):
@@ -459,6 +475,14 @@ class AcceptanceTest(unittest.TestCase):
                 passed, message, _ = check('acceptance', fake)
                 self.assertFalse(passed)
                 self.assertIn('The owner merges this PR with the admin bypass', message)
+
+    def test_only_an_admin_can_clear_owner_needed_or_decision(self):
+        passed, message, _ = check('acceptance', Fake(unlabeled={(7, 'owner-needed'): ('triage-user', '2026-11-07T11:00:00Z')}))
+        self.assertFalse(passed)
+        self.assertIn('owner-needed', message)
+        self.assertTrue(check('acceptance', Fake(unlabeled={(7, 'owner-needed'): ('mohanraj00', '2026-11-07T11:00:00Z')}))[0])
+        self.assertFalse(check('acceptance', Fake(fork=True, unlabeled={(5, 'decision'): ('triage-user', '2026-11-07T11:00:00Z')}))[0])
+        self.assertTrue(check('acceptance', Fake(fork=True, unlabeled={(5, 'decision'): ('mohanraj00', '2026-11-07T11:00:00Z')}))[0])
 
     def test_a_fork_pr_that_follows_stage1_passes(self):
         passed, message, _ = check('acceptance', Fake(fork=True))
