@@ -9,7 +9,8 @@ on:
 permissions: {}
 # Runs for one PR wait in order. A new pending run replaces an older pending run in the same group. Each run reads the
 # live PR, so a replaced run loses no state. A labeled run writes the approval record, so each label has its own group.
-# Then a pending run for one label cannot replace the run for a different label.
+# Then a pending run for one label cannot replace the run for a different label. Runs in different groups can run at
+# the same time. Thus a run does not remove a label that an admin added in the last 5 minutes, and waits for its record.
 concurrency:
   group: gates-${{ github.event.pull_request.number }}-${{ github.event.action == 'labeled' && github.event.label.name || 'state' }}
   cancel-in-progress: false

@@ -6,18 +6,20 @@ It never checks out or runs PR code. It reads the PR from the GitHub API and the
 It uses the standard library only, and it calls no host other than the GitHub API.
 """
 import argparse
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claude_review import MARKER as CLAUDE_MARKER  # noqa: E402
+from claude_review import FAILED, MARKER as CLAUDE_MARKER  # noqa: E402
 
 API = 'https://api.github.com'
 # GitHub lists at most 3000 files for a PR. A longer list is security relevant and level 1.
@@ -38,6 +40,14 @@ STATE = re.compile(r'<!-- codex-review-state:v1 (.*?) -->')
 REVIEWED = re.compile(r'\*\*Reviewed commit:\*\* `([0-9a-f]{10,40})`')
 CLEAN = re.compile(r'^Security review completed\. No security issues were found in this pull request\.$', re.M)
 BRANCH = re.compile(r'^(claude|codex|agy)/')
+# The completion time of the code review in the Codex summary table. The summary changes in place, so its updated_at
+# time can come from a later security review.
+CLAUDE_FAILED = re.compile(re.escape(FAILED) + r'\n\nHead: ([0-9a-f]{40})$')
+CODE_TIME = re.compile(r'\*\*Code Review\*\* \|[^\n]*?<relative-time datetime="([^"]+)">')
+# A label that an admin added in the last FRESH seconds can have a record that a parallel run did not post yet.
+# A run waits at most WAIT seconds for that record, and it does not remove that label.
+FRESH = 300
+WAIT = 120
 
 # Each check binds an approval record to these labels when the owner adds the label.
 BIND = {
@@ -201,12 +211,18 @@ class GitHub:
         data = self.call('GET', '/repos/%s/collaborators/%s/permission' % (self.repo, urllib.parse.quote(login, safe='')))
         return data.get('permission') == 'admin'
 
-    def label_actor(self, issue, label):
-        """Return the login that added the label to the issue last, or None."""
+    def last_labeled(self, issue, label):
+        """Return (login, time) of the last labeled event of the label on the issue or PR, or None."""
         events = self.all_pages('/repos/%s/issues/%d/events' % (self.repo, issue))
         events.sort(key=lambda x: (x['created_at'], x['id']))
         found = [x for x in events if x.get('event') == 'labeled' and (x.get('label') or {}).get('name') == label]
-        return ((found[-1].get('actor') or {}).get('login')) if found else None
+        return ((found[-1].get('actor') or {}).get('login'), found[-1]['created_at']) if found else None
+
+    def now(self):
+        return datetime.now(timezone.utc)
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
 
     def resolve(self, commit):
         """Return the full SHA of a commit prefix, or None if the prefix is unknown or names more than one object."""
@@ -243,17 +259,45 @@ def record_body(label, head, base):
 
 
 def read_records(comments):
-    """Return {label: [(head, base)]} from the approval records of the workflow bot, oldest first."""
-    found = {}
-    for item in comments:
-        if (item.get('user') or {}).get('login') == BOT:
-            for label, head, base in RECORD.findall(item.get('body') or ''):
-                found.setdefault(label, []).append((head, base))
-    return found
+    """Return [(label, head, base, time)] from the approval records of the workflow bot, oldest first."""
+    return [(label, head, base, item.get('created_at') or '') for item in comments
+            if (item.get('user') or {}).get('login') == BOT
+            for label, head, base in RECORD.findall(item.get('body') or '')]
+
+
+def stamp(text):
+    return datetime.fromisoformat(text.replace('Z', '+00:00'))
 
 
 def after(item, changed, field='created_at'):
-    return (item.get(field) or '') > changed
+    return bool(item.get(field)) and (not changed or stamp(item[field]) > stamp(changed))
+
+
+def bound_heads(gh, label, labels, base):
+    """Return (heads, pending) for a label on the PR. heads holds the heads of its records on this base, oldest first.
+    A record counts only if an admin added the label last, and only if the record is newer than that labeled event.
+    Thus an old record does not count after a user removes the label and adds it again.
+    pending is true if an admin added the label recently and its record is not posted yet. Then do not remove the label."""
+    if label not in labels:
+        return [], False
+    last = gh.last_labeled(gh.number, label)
+    if not last or not gh.is_admin(last[0] or ''):
+        return [], False
+    waited = 0
+    while True:
+        heads = [h for name, h, b, t in read_records(gh.comments()) if name == label and b == base and t and stamp(t) >= stamp(last[1])]
+        fresh = (gh.now() - stamp(last[1])).total_seconds() < FRESH
+        if heads or not fresh or waited >= WAIT:
+            return heads, not heads and fresh
+        gh.sleep(10)
+        waited += 10
+
+
+def label_state(gh, label, labels, current):
+    """Return (valid, stale). The label is valid only with a record for the current head and base. A stale label is removed."""
+    heads, pending = bound_heads(gh, label, labels, current[1])
+    valid = current[0] in heads
+    return valid, label in labels and not valid and not pending
 
 
 def codex_security(comments, changed):
@@ -267,6 +311,8 @@ def codex_security(comments, changed):
         if commit:
             results.append((commit.group(1), bool(CLEAN.search(body))))
         else:
+            # An unreadable receipt stays in the order, so an older clean receipt cannot pass after it.
+            results.append((None, False))
             errors.append('A Codex security receipt has no "Reviewed commit" line. The receipt format changed.')
     return results, errors
 
@@ -287,11 +333,19 @@ def codex_code(comments, changed):
                     or not isinstance(review.get('status'), (str, type(None)))
                     or not isinstance(review.get('has_any_findings'), (bool, type(None)))):
                 raise ValueError
+            if changed and review.get('commit_sha'):
+                # The code review must be newer than the base change, not only the summary.
+                done = CODE_TIME.search(item['body'])
+                if not done:
+                    raise ValueError
+                if stamp(done.group(1)) <= stamp(changed):
+                    review = dict(review, commit_sha=None, status=None)
         except (ValueError, KeyError, TypeError):
-            errors.append('The codex-review-state:v1 data has an unknown format. The format changed.')
-            continue
-        if latest is None or (item.get('updated_at') or '') >= latest[0]:
-            latest = (item.get('updated_at') or '', review)
+            # An unreadable summary stays in the order, so an older summary cannot pass after it.
+            review = None
+            errors.append('The codex-review-state:v1 data or the code review time has an unknown format. The format changed.')
+        if latest is None or stamp(item['updated_at']) >= stamp(latest[0]):
+            latest = (item['updated_at'], review)
     return (latest[1] if latest else None), errors
 
 
@@ -301,18 +355,15 @@ def claude_results(comments, changed, kind):
     for item in comments:
         if (item.get('user') or {}).get('login') != BOT or not after(item, changed):
             continue
-        for found_kind, head, findings in CLAUDE_MARKER.findall(item.get('body') or ''):
+        body = item.get('body') or ''
+        for found_kind, head, findings in CLAUDE_MARKER.findall(body):
             if found_kind == kind:
                 results.append((head, findings))
+        # A failed review names no kind. It stops an older clean review of the same head for each kind.
+        failed = CLAUDE_FAILED.match(body)
+        if failed:
+            results.append((failed.group(1), 'unknown'))
     return results
-
-
-def label_state(label, labels, records, current):
-    """Return (valid, stale). The label is valid only with an approval record for the current head and base."""
-    if label not in labels:
-        return False, False
-    valid = current in records.get(label, [])
-    return valid, not valid
 
 
 def builder_of(gh, pr):
@@ -331,11 +382,11 @@ def builder_of(gh, pr):
     return None, 'no agent label and no harness branch prefix'
 
 
-def cross_review(gh, pr, records, comments, changed):
+def cross_review(gh, pr, comments, changed):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     builder, source = builder_of(gh, pr)
-    valid, stale = label_state('cross-reviewed', labels, records, (head, base))
+    valid, stale = label_state(gh, 'cross-reviewed', labels, (head, base))
     lines, drop = [], ['cross-reviewed'] if stale else []
     if builder in (None, 'claude'):
         name = 'No harness' if builder is None else 'Claude Code'
@@ -373,7 +424,7 @@ def cross_review(gh, pr, records, comments, changed):
     return False, lines, drop
 
 
-def security_review(gh, config, pr, paths, complete, records, comments, changed):
+def security_review(gh, config, pr, paths, complete, comments, changed):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     forced = 'security-needed' in labels
@@ -406,21 +457,20 @@ def security_review(gh, config, pr, paths, complete, records, comments, changed)
 
     results, errors = codex_security(comments, changed)
     lines += errors
-    if results and results[-1][1] and covers(results[-1][0]):
+    if results and results[-1][0] and results[-1][1] and covers(results[-1][0]):
         commit = results[-1][0]
         return True, lines + ['The Codex security review of %s found no security issues.' % name(commit)], []
     claude = claude_results(comments, changed, 'security')
     if claude and claude[-1][1] == '0' and covers(claude[-1][0]):
         return True, lines + ['The Claude security review of %s found no security issues.' % name(claude[-1][0])], []
+    drop = []
     if 'security-reviewed' in labels:
-        bound = [h for h, b in records.get('security-reviewed', []) if b == base]
+        bound, pending = bound_heads(gh, 'security-reviewed', labels, base)
         if bound and covers(bound[-1]):
             return True, lines + ['The security-reviewed label applies to %s.' % name(bound[-1])], []
         lines.append('The security-reviewed label has no approval record that covers head %s on base %s. Review the current change, then add the label again.' % (head[:12], base))
-        drop = ['security-reviewed']
-    else:
-        drop = []
-    if results and not results[-1][1]:
+        drop = [] if pending else ['security-reviewed']
+    if results and results[-1][0] and not results[-1][1]:
         lines.append('The latest Codex security review has open findings. Fix them and ask again, or write the answer on the PR and ask the owner to add the security-reviewed label.')
     lines.append('Post "@codex security review" as a separate comment. The check passes when the Codex security review of head %s finds no security issues, or when the owner adds the security-reviewed label.' % head[:12])
     return False, lines, drop
@@ -444,7 +494,7 @@ def template_errors(template, body):
     return [k for k, v in want.items() if not have.get(k) or have[k] == v]
 
 
-def acceptance(gh, config, pr, files, complete, records, template):
+def acceptance(gh, config, pr, files, complete, template):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     fork = (pr['head'].get('repo') or {}).get('full_name') != gh.repo
@@ -455,14 +505,14 @@ def acceptance(gh, config, pr, files, complete, records, template):
         lines.append('This PR comes from the fork %s. Stage 1 of "Fork PRs" applies.' % show((pr['head'].get('repo') or {}).get('full_name') or 'that GitHub deleted'))
         issues = gh.linked_issues()
         accepted = [x for x in issues if x['open'] and x['repo'] == gh.repo and 'accepted' in x['labels'] and 'decision' not in x['labels']]
-        if not any(gh.is_admin(gh.label_actor(x['number'], 'accepted') or '') for x in accepted):
+        if not any(gh.is_admin((gh.last_labeled(x['number'], 'accepted') or ('', ''))[0] or '') for x in accepted):
             problems.append('Link an open issue that has the label accepted and not the label decision. An admin must add the accepted label.')
         lines_changed = sum(x['lines'] for x in files if not match(x['path'], config['generated']))
         if not complete:
             problems.append('The PR has more files than GitHub lists.')
         elif lines_changed > FORK_LINES:
             problems.append('The PR changes %d lines without generated files. The limit is about %d.' % (lines_changed, FORK_LINES))
-        valid, stale = label_state('accepted', labels, records, (head, base))
+        valid, stale = label_state(gh, 'accepted', labels, (head, base))
         if stale:
             drop.append('accepted')
         if (level1 or not complete) and not valid:
@@ -470,7 +520,7 @@ def acceptance(gh, config, pr, files, complete, records, template):
         missing = template_errors(template, pr.get('body'))
         if missing:
             problems.append('Fill these sections of the PR template: ' + ', '.join(missing) + '.')
-        if label_state('ready-for-review', labels, records, (head, base))[1]:
+        if label_state(gh, 'ready-for-review', labels, (head, base))[1]:
             drop.append('ready-for-review')
             lines.append('A push after the owner review removes the ready-for-review label.')
     owner = []
@@ -494,8 +544,6 @@ def run(check, gh, event, config, template=''):
         paths = [p for x in files for p in [x['path']] + ([x['previous']] if x['previous'] else [])]
         docs = complete and classify(config, paths)['docs_only']
         return True, ['Docs-only change.' if docs else 'The project jobs run.'], {'docs_only': str(docs).lower(), 'code': str(not docs).lower()}
-    comments = gh.comments()
-    records = read_records(comments)
     label = (event.get('label') or {}).get('name')
     # Only an admin label makes a record. A label from another user has no record, so the gate removes it.
     sender = (event.get('sender') or {}).get('login') or ''
@@ -504,19 +552,19 @@ def run(check, gh, event, config, template=''):
         old = event['pull_request']
         head, base = old['head']['sha'], old['base']['ref']
         gh.post_comment(record_body(label, head, base))
-        records.setdefault(label, []).append((head, base))
+    comments = gh.comments()
     pr = gh.pr()
     if check == 'acceptance':
         files, complete = gh.files()
-        passed, lines, drop = acceptance(gh, config, pr, files, complete, records, template)
+        passed, lines, drop = acceptance(gh, config, pr, files, complete, template)
     else:
         changed = gh.base_changed_at()
         if check == 'cross-review':
-            passed, lines, drop = cross_review(gh, pr, records, comments, changed)
+            passed, lines, drop = cross_review(gh, pr, comments, changed)
         else:
             files, complete = gh.files()
             paths = [p for x in files for p in [x['path']] + ([x['previous']] if x['previous'] else [])]
-            passed, lines, drop = security_review(gh, config, pr, paths, complete, records, comments, changed)
+            passed, lines, drop = security_review(gh, config, pr, paths, complete, comments, changed)
     for name in drop:
         gh.remove_label(name)
     return passed, lines, {}

@@ -27,11 +27,13 @@ CLEAN_RECEIPT = ('<!-- codex-review-receipt:v1 -->\n\n### 🛡️ Codex Security
 OPEN_RECEIPT = '### 🛡️ Codex Security Review\n\nSecurity review completed. 1 issue was found.\n\n**Reviewed commit:** `%s`\n'
 
 
-def state(commit=HEAD, status='completed', findings=False, unresolved=None):
+def state(commit=HEAD, status='completed', findings=False, unresolved=None, done=None):
     data = {'code_review': {'commit_sha': commit, 'has_any_findings': findings,
                             'has_unresolved_findings': findings if unresolved is None else unresolved, 'status': status},
             'security_review': {'commit_sha': None, 'has_any_findings': None, 'has_unresolved_findings': None, 'status': None}}
-    return '<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 %s -->\n<details>' % json.dumps(data)
+    row = '' if done is None else ('\n| 📝 **Code Review** | ✅ **Completed** <relative-time datetime="%s">%s</relative-time> | `%s` | Manual request |'
+                                   % (done, done, (commit or '')[:7]))
+    return '<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 %s -->\n<details>%s' % (json.dumps(data), row)
 
 
 def comment(login, body, at='2026-11-07T10:00:00Z', updated=None):
@@ -43,8 +45,11 @@ class Fake:
 
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
-                 admins=('mohanraj00',), actors=None, objects=None):
-        self.repo = REPO
+                 admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z'):
+        self.repo, self.number = REPO, 7
+        self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
+        self.clock = gate.stamp(now)
+        self.slept = 0
         self.state = {'labels': [{'name': x} for x in labels], 'body': body,
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
                       'base': {'ref': 'main'}}
@@ -60,12 +65,24 @@ class Fake:
         self.actors = actors if actors is not None else {5: 'mohanraj00'}
         self.objects = objects if objects is not None else [HEAD, OLD]
         self.posted, self.removed = [], []
+        self.on_sleep = None
 
     def is_admin(self, login):
         return login in self.admins
 
-    def label_actor(self, issue, label):
-        return self.actors.get(issue)
+    def last_labeled(self, issue, label):
+        if issue == self.number:
+            return self.labeled.get(label)
+        return (self.actors[issue], '2026-11-07T09:00:00Z') if issue in self.actors else None
+
+    def now(self):
+        return self.clock
+
+    def sleep(self, seconds):
+        self.slept += seconds
+        if self.on_sleep:
+            self.on_sleep()
+        self.clock = gate.datetime.fromtimestamp(self.clock.timestamp() + seconds, gate.timezone.utc)
 
     def resolve(self, commit):
         found = [x for x in self.objects if x.startswith(commit)]
@@ -268,6 +285,34 @@ class SecurityTest(unittest.TestCase):
         check('security-review', fake, event('labeled', 'cross-reviewed'))
         self.assertEqual(fake.posted, [])
 
+    def test_an_unreadable_newer_receipt_stops_an_older_clean_receipt(self):
+        comments = [comment(gate.CODEX, CLEAN_RECEIPT % HEAD[:10], '2026-11-07T10:00:00Z'),
+                    comment(gate.CODEX, '### Codex Security Review\n\n1 issue.\n\nCommit: x', '2026-11-07T11:00:00Z')]
+        passed, message, _ = check('security-review', Fake(files=['src/a.py'], comments=comments))
+        self.assertFalse(passed)
+        self.assertIn('The receipt format changed.', message)
+
+    def test_an_old_record_does_not_count_after_the_label_is_added_again(self):
+        for actor, at in (('triage-user', '2026-11-07T11:00:00Z'), ('mohanraj00', '2026-11-07T11:00:00Z')):
+            with self.subTest(actor=actor):
+                fake = Fake(files=['src/a.py'], labels=['security-reviewed'], comments=[record('security-reviewed')],
+                            labeled={'security-reviewed': (actor, at)})
+                self.assertFalse(check('security-review', fake)[0])
+                self.assertEqual(fake.removed, ['security-reviewed'])
+                fake = Fake(ref='agy/7', issues=[], labels=['cross-reviewed'], comments=[record('cross-reviewed')],
+                            labeled={'cross-reviewed': (actor, at)})
+                self.assertFalse(check('cross-review', fake)[0])
+
+    def test_a_run_waits_for_the_record_of_a_recent_label_and_does_not_remove_it(self):
+        recent = {'cross-reviewed': ('mohanraj00', '2026-11-07T12:59:00Z')}
+        fake = Fake(ref='agy/7', issues=[], labels=['cross-reviewed'], labeled=recent)
+        self.assertFalse(check('cross-review', fake)[0])
+        self.assertEqual((fake.slept, fake.removed), (gate.WAIT, []))
+        fake = Fake(ref='agy/7', issues=[], labels=['cross-reviewed'], labeled=recent)
+        fake.on_sleep = lambda: fake.comment_list.append(comment(gate.BOT, gate.record_body('cross-reviewed', HEAD, 'main'), '2026-11-07T13:00:05Z'))
+        self.assertTrue(check('cross-review', fake)[0])
+        self.assertEqual((fake.slept, fake.removed), (10, []))
+
     def test_a_label_from_a_user_who_is_not_an_admin_makes_no_record(self):
         for sender in ('triage-user', ''):
             with self.subTest(sender=sender):
@@ -350,8 +395,28 @@ class CrossReviewTest(unittest.TestCase):
     def test_the_state_before_the_base_change_does_not_count(self):
         fake = Fake(comments=[comment(gate.CODEX, state())], base_changed='2026-11-07T11:00:00Z')
         self.assertFalse(check('cross-review', fake)[0])
-        fake = Fake(comments=[comment(gate.CODEX, state(), updated='2026-11-07T12:00:00Z')], base_changed='2026-11-07T11:00:00Z')
+        late = '2026-11-07T12:00:00Z'
+        fake = Fake(comments=[comment(gate.CODEX, state(done='2026-11-07T11:30:00.123Z'), updated=late)], base_changed='2026-11-07T11:00:00Z')
         self.assertTrue(check('cross-review', fake)[0])
+        # A later security review changes the summary, but the code review is from before the base change.
+        fake = Fake(comments=[comment(gate.CODEX, state(done='2026-11-07T10:30:00.123Z'), updated=late)], base_changed='2026-11-07T11:00:00Z')
+        self.assertFalse(check('cross-review', fake)[0])
+        fake = Fake(comments=[comment(gate.CODEX, state(), updated=late)], base_changed='2026-11-07T11:00:00Z')
+        passed, message, _ = check('cross-review', fake)
+        self.assertFalse(passed)
+        self.assertIn('The format changed.', message)
+
+    def test_an_unreadable_newer_state_stops_an_older_clean_state(self):
+        comments = [comment(gate.CODEX, state(), '2026-11-07T10:00:00Z'),
+                    comment(gate.CODEX, '<!-- codex-review-state:v1 {broken} -->', '2026-11-07T11:00:00Z')]
+        self.assertFalse(check('cross-review', Fake(comments=comments))[0])
+
+    def test_a_failed_claude_review_stops_an_older_clean_review_of_the_head(self):
+        comments = [comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T10:00:00Z'),
+                    comment(gate.BOT, comment_body('failure', HEAD, ''), '2026-11-07T11:00:00Z')]
+        self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=comments))[0])
+        comments = [comments[1], comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T12:00:00Z')]
+        self.assertTrue(check('cross-review', Fake(ref='codex/7', issues=[], comments=comments))[0])  # A new clean review passes.
 
     def test_a_codex_or_agy_pr_needs_a_clean_claude_review_of_the_head(self):
         clean = comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0\nNo defect.', 'code'))
