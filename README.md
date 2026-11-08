@@ -32,7 +32,7 @@ The action holds the shared categories: the workflows, the agent instructions an
 ### What each gate does
 
 - `cross-review` finds the builder from the first `agent:*` label of the linked issue, then from the branch prefix. A Claude-built PR, or a PR with no harness, needs a completed Codex code review of the current head. A Codex-built or agy-built PR needs a Claude workflow review of the current head with `Findings: 0`. The `cross-reviewed` label with an approval record is the fallback for an agy or owner review.
-- `security-review` passes if no listed path changed. Otherwise it needs a clean Codex security receipt, a clean Claude security review, or the `security-reviewed` label with an approval record. After a clean review, a new push needs a new review only if the new commits touch a listed path. The `security-needed` label forces a review of the current head.
+- `security-review` passes if no listed path changed. Otherwise it needs a clean Codex security receipt, or the `security-reviewed` label with an approval record. A clean Claude security review is advisory. The gate writes a line about it, and the owner adds the `security-reviewed` label after the owner reads the review. A Codex security receipt with open findings stops the pass. After a clean review, a new push needs a new review only if the new commits touch a listed path. The `security-needed` label forces a review of the current head.
 - `acceptance` applies stage 1 of "Fork PRs" to a fork PR. For each PR, it fails if a level 1 path changed or if the PR has the `owner-needed` label. Then the owner merges the PR with the admin bypass, and auto-merge cannot merge it. A push removes the `ready-for-review` label from a fork PR.
 
 When a user with the admin role adds `accepted`, `ready-for-review`, `security-reviewed` or `cross-reviewed` to a PR, the gate posts an approval record for that head and base. A label from a triage or write user gets no record. For a fork PR, an admin must add the `accepted` label of the linked issue. A label without a record for the current head and base is not valid, and the gate removes it.
@@ -43,9 +43,11 @@ Only an admin can clear the blocking labels `owner-needed`, `security-needed` an
 
 GitHub Actions has no event for a resolved review thread. If you resolve the last Codex thread without a push, run the failed `cross-review` job again, for example with `gh run rerun <run-id> --failed`.
 
-### Known limit
+### Known limits
 
 The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed` and `ready-for-review` depend on the rule that agents never add them.
+
+The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. If the first line of a Claude review gives `Findings: 0` and a later line starts with a severity tag or a `path:line` reference, the marker gives `findings=unknown`. This check blocks only a count that does not agree with the text. It does not block a model that omits a finding.
 
 ## Constitution template
 

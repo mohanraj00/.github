@@ -500,11 +500,13 @@ def security_review(gh, config, pr, paths, complete, comments, changed):
     if results and results[-1][0] and results[-1][1] and covers(results[-1][0]):
         commit = results[-1][0]
         return True, lines + ['The Codex security review of %s found no security issues.' % name(commit)], []
-    # The Claude result is a fallback. It does not pass over a Codex result with open findings.
+    # A Claude security result is advisory. It never passes the gate. The owner reads it and adds the security-reviewed label.
+    # A Codex result with open findings stops the advisory line too.
     codex_open = bool(results) and bool(results[-1][0]) and not results[-1][1]
     claude = claude_results(gh, pr, comments, changed, 'security')
     if not codex_open and claude and claude[-1][1] == '0' and covers(claude[-1][0]):
-        return True, lines + ['The Claude security review of %s found no security issues.' % name(claude[-1][0])], []
+        lines.append('The Claude security review of %s found no security issues. This result is advisory. '
+                     'The owner adds the security-reviewed label after the owner reads the review.' % name(claude[-1][0]))
     drop = []
     if 'security-reviewed' in labels:
         bound, pending = bound_heads(gh, 'security-reviewed', labels, base)

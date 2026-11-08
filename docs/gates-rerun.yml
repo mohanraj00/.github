@@ -6,6 +6,8 @@ name: Gates rerun
 #   other than the workflow token posted the comment.
 # - workflow_run: a comment that the workflow token posts does not start a workflow. Thus the completion of the Claude
 #   review workflow starts this run. That event does not name the PR, so the job checks each open PR.
+#   Each PR comment starts the Claude review workflow, and a comment that is not a review request gives a skipped run.
+#   The filter on the skipped conclusion stops a runner with actions: write for each of these comments.
 on:
   issue_comment:
     types: [created]
@@ -18,7 +20,7 @@ jobs:
     if: >-
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
       (github.event.comment.user.login == 'chatgpt-codex-connector[bot]' || github.event.comment.user.login == 'github-actions[bot]')) ||
-      github.event_name == 'workflow_run'
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

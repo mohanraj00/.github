@@ -67,6 +67,17 @@ class CallerTest(unittest.TestCase):
         self.assertIn('actions/workflows/gates.yml/runs', RERUN)
         self.assertNotIn('actions/checkout', RERUN)
 
+    def test_the_rerun_skips_a_claude_run_that_was_skipped(self):
+        condition = jobs(RERUN)['rerun'].split('if: >-\n', 1)[1].split('\n    runs-on:', 1)[0]
+        condition = ' '.join(condition.split())
+        self.assertIn("github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'skipped'", condition)
+        branches = condition.split(' || (github.event_name == ')
+        self.assertEqual(len(branches), 2)
+        self.assertNotIn("event_name == 'workflow_run'", branches[0])
+        for login in ('chatgpt-codex-connector[bot]', 'github-actions[bot]'):
+            self.assertIn("github.event.comment.user.login == '%s'" % login, branches[0])
+        self.assertIn("github.event_name == 'issue_comment'", branches[0])
+
     def test_ci_ok_collects_the_jobs_and_accepts_a_skipped_job(self):
         found = jobs(CI_OK)
         self.assertIn("if: needs.changes.outputs.code == 'true'", found['test'])

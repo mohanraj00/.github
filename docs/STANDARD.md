@@ -1,6 +1,6 @@
 # Project standard
 
-Version: 3
+Version: 4
 
 ## Documents
 
@@ -48,6 +48,7 @@ The label `agent:claude-code` in nookku becomes `agent:claude`. Open branches ke
 - A code review is valid only for the current head and base.
 - The fallback starts if Codex reports a limit, or gives no result in 30 minutes. The 30 minutes is an estimate.
 - CI cannot verify a local agy result. For a local agy security result, the owner adds the `security-reviewed` label.
+- A Claude workflow security result is advisory. The `security-review` gate does not accept it. The owner reads the review, then adds the `security-reviewed` label. This is the same rule as for a local agy security result.
 
 The review guidelines in `AGENTS.md` are short. They state what a failure looks like in the project, the paths to skip and the limit for nits. If a finding occurs again, add a check, a test or a line in these guidelines.
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fixed prompts, result check and PR comment of the Claude review workflow. The workflow runs this file from the default branch.
 
-The comment starts with a machine marker that this file writes outside the model text. The cross-review and
-security-review gates read the marker. neutral() escapes the model text, so the model text cannot make a marker."""
+The comment starts with a machine marker that this file writes outside the model text. The cross-review gate reads
+the marker. For the security-review gate, a security marker is advisory only. neutral() escapes the model text, so the model text cannot make a marker."""
 import argparse
 import json
 import os
@@ -39,6 +39,11 @@ FAILED='NO VALID CLAUDE REVIEW'
 MARKER=re.compile(r'<!-- claude-review:v1 kind=(code|security) head=([0-9a-f]{40}) findings=(\d+|unknown) run=([1-9][0-9]{0,19}) -->')
 RUN=re.compile(r'[1-9][0-9]{0,19}')
 COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
+# A line that starts with a severity tag P0 to P3 or a path:line reference is a finding.
+# A list marker, a heading mark, **, [ or ` can come first.
+# The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
+FINDING=re.compile(r'^[ \t]*(?:(?:[-*+]|#{1,6}|\d{1,3}[.)])[ \t]+)?(?:\*\*|\[|`)*[ \t]*'
+                   r'(?:P[0-3]\b|(?:[\w.-]+/)*[\w.-]*\w\.\w+:\d+|(?:[\w.-]+/)+[\w.-]+:\d+)',re.M)
 # The exact request texts. The workflow compares the comment body with these texts.
 REQUESTS={'code':'@claude review this PR. Use the Review guidelines in AGENTS.md.',
     'security':'@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.'}
@@ -64,10 +69,13 @@ def neutral(text):
     return text
 
 def findings(text):
-    """Return the count from the first line of the model text, or unknown."""
-    first=text.strip().split('\n',1)[0].strip()
-    found=COUNT.fullmatch(first)
-    return found.group(1) if found else 'unknown'
+    """Return the count from the first line of the model text, or unknown.
+    A count of 0 with a finding line below it does not agree with the text, so the result is unknown."""
+    first,_,rest=text.strip().partition('\n')
+    found=COUNT.fullmatch(first.strip())
+    if not found:return 'unknown'
+    if found.group(1)=='0' and FINDING.search(rest):return 'unknown'
+    return found.group(1)
 
 def comment_body(status,head,text,kind=None,run=None):
     """Return the PR comment. A review that is not valid gives only the fixed failure text and the head.

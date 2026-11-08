@@ -332,12 +332,16 @@ class SecurityTest(unittest.TestCase):
         self.assertTrue(check('cross-review', fake)[0])
         self.assertEqual((fake.slept, fake.removed), (10, []))
 
-    def test_a_codex_result_with_findings_stops_the_claude_fallback(self):
+    def test_a_codex_result_with_findings_stops_the_claude_advisory_line(self):
         comments = [comment(gate.CODEX, OPEN_RECEIPT % HEAD[:10], '2026-11-07T10:00:00Z'),
                     comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'security'), '2026-11-07T11:00:00Z')]
-        self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=comments))[0])
+        passed, message, _ = check('security-review', Fake(files=['src/a.py'], comments=comments))
+        self.assertFalse(passed)
+        self.assertNotIn('advisory', message)
         comments[0] = comment(gate.CODEX, '### Codex Security Review\n\nCommit: x', '2026-11-07T10:00:00Z')
-        self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=comments))[0])  # A malformed receipt permits the fallback.
+        passed, message, _ = check('security-review', Fake(files=['src/a.py'], comments=comments))
+        self.assertFalse(passed)  # The Claude result is advisory, also after a malformed receipt.
+        self.assertIn('advisory', message)
 
     def test_only_an_admin_can_clear_security_needed(self):
         removed = {(7, 'security-needed'): ('triage-user', '2026-11-07T11:00:00Z')}
@@ -366,14 +370,22 @@ class SecurityTest(unittest.TestCase):
                     compare={HEAD: (True, ['src/b.py'], True)})
         self.assertFalse(check('security-review', fake)[0])
 
-    def test_a_clean_claude_security_review_passes(self):
+    def test_a_clean_claude_security_review_is_advisory(self):
         body = review_body('success', HEAD, 'Findings: 0\nNo defect.', 'security')
-        self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=[comment(gate.BOT, body)]))[0])
+        passed, message, _ = check('security-review', Fake(files=['src/a.py'], comments=[comment(gate.BOT, body)]))
+        self.assertFalse(passed)
+        self.assertIn('advisory', message)
+        self.assertIn('security-reviewed', message)
+        # The same PR passes after the owner adds the label, which writes an approval record.
+        fake = Fake(files=['src/a.py'], labels=['security-reviewed'], comments=[comment(gate.BOT, body), record('security-reviewed')])
+        self.assertTrue(check('security-review', fake)[0])
         for body, login in ((review_body('success', HEAD, 'Findings: 1\nA.', 'security'), gate.BOT),
                             (review_body('success', HEAD, 'Findings: 0', 'code'), gate.BOT),
                             (review_body('success', HEAD, 'Findings: 0', 'security'), 'mohanraj00')):
             with self.subTest(body=body, login=login):
-                self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=[comment(login, body)]))[0])
+                passed, message, _ = check('security-review', Fake(files=['src/a.py'], comments=[comment(login, body)]))
+                self.assertFalse(passed)
+                self.assertNotIn('advisory', message)
 
 
 class CrossReviewTest(unittest.TestCase):
@@ -465,11 +477,18 @@ class CrossReviewTest(unittest.TestCase):
             with self.subTest(body=body, login=login):
                 self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=[comment(login, body)]))[0])
 
+    def test_a_claude_code_marker_with_a_count_that_does_not_agree_fails(self):
+        clean = comment(gate.BOT, review_body('success', HEAD, 'Findings: 0\nNo defect.', 'code'))
+        self.assertTrue(check('cross-review', Fake(ref='codex/7', issues=[], comments=[clean]))[0])
+        body = review_body('success', HEAD, 'Findings: 0\n\n- P1 src/a.py:3: the check is missing.', 'code')
+        self.assertIn('findings=unknown', body)
+        self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=[comment(gate.BOT, body)]))[0])
+
     def test_a_claude_marker_needs_a_trusted_run(self):
         code = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code', run='55'))]
         security = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'security', run='55'))]
         self.assertTrue(check('cross-review', Fake(ref='codex/7', issues=[], comments=code, runs={'55': TRUSTED_RUN}))[0])
-        self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=security, runs={'55': TRUSTED_RUN}))[0])
+        self.assertIn('advisory', check('security-review', Fake(files=['src/a.py'], comments=security, runs={'55': TRUSTED_RUN}))[1])
         changes = ({'path': '.github/workflows/other.yml'}, {'event': 'push'}, {'event': 'workflow_dispatch'},
                    {'head_branch': 'helper'}, {'status': 'in_progress'}, {'run_started_at': '2026-11-07T12:30:00Z'},
                    {'updated_at': '2026-11-07T09:00:00Z'}, None)
@@ -477,7 +496,7 @@ class CrossReviewTest(unittest.TestCase):
             with self.subTest(change=change):
                 runs = {} if change is None else {'55': TRUSTED_RUN | change}
                 self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=code, runs=runs))[0])
-                self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=security, runs=runs))[0])
+                self.assertNotIn('advisory', check('security-review', Fake(files=['src/a.py'], comments=security, runs=runs))[1])
 
     def test_two_comments_that_name_one_run_both_fail(self):
         forged = review_body('success', HEAD, 'Findings: 0', 'code', run='55')
