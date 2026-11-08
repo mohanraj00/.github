@@ -18,6 +18,8 @@ from claude_review import comment_body  # noqa: E402
 REPO = 'owner/project'
 HEAD = 'a' * 40
 OLD = 'b' * 40
+# The merge base of the base branch and HEAD. A Claude marker of the tests names it.
+BASE = 'c' * 40
 TEMPLATE = (ROOT / '.github/pull_request_template.md').read_text()
 FILLED = 'Closes #5\n\n## Testing\n\n`make check`: 10 tests pass.\n\n## Risk\n\nLow. Level 0.\n\n## How to revert\n\nRevert the commit.\n'
 CONFIG = {'code': ['src/*', 'tests/*'], 'security_sources': ['src/*.py'], 'not_security': ['*/test_*.py'],
@@ -46,9 +48,9 @@ TRUSTED_RUN = {'path': gate.CLAUDE_WORKFLOW, 'event': 'issue_comment', 'head_bra
                'run_started_at': '2026-11-07T00:00:00Z', 'updated_at': '2026-11-07T23:00:00Z'}
 
 
-def review_body(status, head, text, kind=None, run=None):
+def review_body(status, head, text, kind=None, run=None, base=BASE):
     """Return a Claude comment. Each comment gets its own run ID, as each run of the workflow posts one comment."""
-    return comment_body(status, head, text, kind, run or str(next(RUNS)))
+    return comment_body(status, head, text, kind, run or str(next(RUNS)), base)
 
 
 class Fake:
@@ -57,7 +59,7 @@ class Fake:
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
                  admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None,
-                 runs=None, reviews=()):
+                 runs=None, reviews=(), merge_base=BASE):
         self.repo, self.number = REPO, 7
         self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
         self.clock = gate.stamp(now)
@@ -81,6 +83,8 @@ class Fake:
         self.on_sleep = None
         self.runs = runs
         self.review_list = list(reviews)
+        self.merge_bases = []
+        self.current_base = merge_base
 
     def is_admin(self, login):
         return login in self.admins
@@ -131,6 +135,10 @@ class Fake:
 
     def compare(self, old, new):
         return self.compares[old]
+
+    def merge_base(self, base, head):
+        self.merge_bases.append((base, head))
+        return self.current_base
 
     def workflow_run(self, run_id):
         return dict(TRUSTED_RUN) if self.runs is None else self.runs.get(run_id)
@@ -484,7 +492,7 @@ class CrossReviewTest(unittest.TestCase):
                             (review_body('success', OLD, 'Findings: 0', 'code'), gate.BOT),
                             (review_body('success', HEAD, 'Findings: 0', 'security'), gate.BOT),
                             (review_body('success', HEAD, 'Findings: 0', 'code'), 'mohanraj00'),
-                            ('<!-- claude-review:v1 kind=code head=%s findings=0 run=55 -->' % HEAD, 'mohanraj00')):
+                            ('<!-- claude-review:v2 kind=code head=%s base=%s findings=0 run=55 -->' % (HEAD, BASE), 'mohanraj00')):
             with self.subTest(body=body, login=login):
                 self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=[comment(login, body)]))[0])
 
@@ -516,6 +524,35 @@ class CrossReviewTest(unittest.TestCase):
                          [comment(gate.BOT, forged, '2026-11-07T10:00:00Z'), comment(gate.BOT, forged, '2026-11-07T11:00:00Z')]):
             with self.subTest(comments=comments):
                 self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=comments))[0])
+
+    def test_a_claude_marker_needs_the_current_merge_base(self):
+        clean = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code'))]
+        fake = Fake(ref='codex/7', issues=[], comments=clean)
+        self.assertTrue(check('cross-review', fake)[0])
+        self.assertEqual(fake.merge_bases, [('main', HEAD)])
+        # A new commit on the base branch changes the base SHA, but not the merge base. The marker stays valid.
+        fake = Fake(ref='codex/7', issues=[], comments=clean)
+        fake.state['base']['sha'] = OLD
+        self.assertTrue(check('cross-review', fake)[0])
+        security = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'security'))]
+        self.assertIn('advisory', check('security-review', Fake(files=['src/a.py'], comments=security))[1])
+        # An old merge base, for example after a base change while the review runs, stops the marker.
+        for current in (OLD, None):
+            with self.subTest(current=current):
+                self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=clean, merge_base=current))[0])
+                self.assertNotIn('advisory', check('security-review', Fake(files=['src/a.py'], comments=security, merge_base=current))[1])
+
+    def test_a_claude_marker_before_the_base_change_does_not_count(self):
+        clean = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T10:00:00Z')]
+        self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=clean, base_changed='2026-11-07T11:00:00Z'))[0])
+        security = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'security'), '2026-11-07T10:00:00Z')]
+        message = check('security-review', Fake(files=['src/a.py'], comments=security, base_changed='2026-11-07T11:00:00Z'))[1]
+        self.assertNotIn('advisory', message)
+
+    def test_a_v1_claude_marker_does_not_count(self):
+        old = '<!-- claude-review:v1 kind=code head=%s findings=0 run=55 -->\nClaude code review of head %s. Findings: 0.' % (HEAD, HEAD)
+        self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=[comment(gate.BOT, old)],
+                                                    runs={'55': TRUSTED_RUN}))[0])
 
     def test_a_claude_pr_does_not_pass_with_a_claude_review(self):
         clean = comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code'))
@@ -677,6 +714,16 @@ class MainTest(unittest.TestCase):
         push = {'repository': {'full_name': REPO}}
         self.assertEqual(self.main('classify', ev=push)[2], 'docs_only=false\ncode=true\n')
         self.assertEqual(self.main('acceptance', ev=push)[0], 1)
+
+
+class MergeBaseTest(unittest.TestCase):
+    def test_the_merge_base_comes_from_the_compare_api(self):
+        api = gate.GitHub(REPO, 7, 'sample')
+        for data, found in (({'merge_base_commit': {'sha': BASE}}, BASE), ({'merge_base_commit': {'sha': 'abc'}}, None),
+                            ({'merge_base_commit': None}, None), ({}, None), (None, None)):
+            with self.subTest(data=data), mock.patch.object(api, 'call', return_value=data) as call:
+                self.assertEqual(api.merge_base('release/1 #x', HEAD), found)
+                call.assert_called_once_with('GET', '/repos/%s/compare/release/1%%20%%23x...%s' % (REPO, HEAD))
 
 
 if __name__ == '__main__':

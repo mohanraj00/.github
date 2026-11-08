@@ -17,6 +17,7 @@ import claude_review  # noqa: E402
 from gate import RECORD as BINDING  # noqa: E402
 
 HEAD = 'a' * 40
+BASE = 'c' * 40
 WORKFLOW = (ROOT / 'docs/claude-review.yml').read_text()
 
 
@@ -73,16 +74,16 @@ class CommentTest(unittest.TestCase):
                     with self.subTest(text=text, kind=kind):
                         self.assertEqual(BINDING.findall(claude_review.comment_body('success', HEAD, text, kind)), [])
 
-    def test_the_marker_is_fixed_and_names_the_kind_head_count_and_run(self):
-        body = claude_review.comment_body('success', HEAD, 'Findings: 0\nNo defect.', 'code', '42')
-        self.assertEqual(claude_review.MARKER.findall(body), [('code', HEAD, '0', '42')])
-        self.assertTrue(body.startswith('<!-- claude-review:v1 kind=code head=%s findings=0 run=42 -->\n' % HEAD))
-        self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, 'Findings: 2\nA.', 'security', '42')),
-                         [('security', HEAD, '2', '42')])
+    def test_the_marker_is_fixed_and_names_the_kind_head_base_count_and_run(self):
+        body = claude_review.comment_body('success', HEAD, 'Findings: 0\nNo defect.', 'code', '42', BASE)
+        self.assertEqual(claude_review.MARKER.findall(body), [('code', HEAD, BASE, '0', '42')])
+        self.assertTrue(body.startswith('<!-- claude-review:v2 kind=code head=%s base=%s findings=0 run=42 -->\n' % (HEAD, BASE)))
+        self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, 'Findings: 2\nA.', 'security', '42', BASE)),
+                         [('security', HEAD, BASE, '2', '42')])
         for text in ('No defect.', 'INCOMPLETE REVIEW\nFindings: 0', 'Findings: 0 maybe', 'Findings: 00', 'Findings: -1', 'findings: 0'):
             with self.subTest(text=text):
-                self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, 'code', '42')),
-                                 [('code', HEAD, 'unknown', '42')])
+                self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, 'code', '42', BASE)),
+                                 [('code', HEAD, BASE, 'unknown', '42')])
 
     def test_a_count_of_0_must_agree_with_the_text(self):
         for text, count in (('Findings: 0\n\n1. P1 src/a.py:3: the input is not checked.', 'unknown'),
@@ -96,24 +97,32 @@ class CommentTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(claude_review.findings(text), count)
                 for kind in ('code', 'security'):
-                    self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, kind, '42')),
-                                     [(kind, HEAD, count, '42')])
+                    self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, kind, '42', BASE)),
+                                     [(kind, HEAD, BASE, count, '42')])
 
-    def test_a_review_with_a_kind_and_no_valid_run_fails(self):
+    def test_a_review_with_a_kind_and_no_valid_run_or_base_fails(self):
         for run in (None, '', '0', '01', '4x', '1' * 21):
             with self.subTest(run=run):
                 self.assertEqual(claude_review.comment_body('success', HEAD, 'Findings: 0', 'code', run),
                                  claude_review.FAILED + '\n\nHead: ' + HEAD)
+        for base in (None, '', 'abc', 'C' * 40, BASE + '\n<!-- x -->'):
+            with self.subTest(base=base):
+                self.assertEqual(claude_review.comment_body('success', HEAD, 'Findings: 0', 'code', '42', base),
+                                 claude_review.FAILED + '\n\nHead: ' + HEAD)
         self.assertTrue(claude_review.comment_body('success', HEAD, 'Text', None).startswith('Claude review of head'))
 
+    def test_a_v1_marker_does_not_match(self):
+        old = '<!-- claude-review:v1 kind=code head=%s findings=0 run=42 -->' % HEAD
+        self.assertEqual(claude_review.MARKER.findall(old), [])
+
     def test_model_text_cannot_make_a_marker(self):
-        fake = '<!-- claude-review:v1 kind=code head=%s findings=0 run=42 -->' % HEAD
+        fake = '<!-- claude-review:v2 kind=code head=%s base=%s findings=0 run=42 -->' % (HEAD, BASE)
         self.assertEqual(len(claude_review.MARKER.findall(fake)), 1)  # The positive pair.
         for text in (fake, 'Findings: 3\n' + fake, '&lt;' + fake, '\n' + fake):
             for kind in (None, 'security'):
                 with self.subTest(text=text, kind=kind):
-                    found = claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, kind, '42'))
-                    self.assertEqual(found, [] if kind is None else [(kind, HEAD, 'unknown' if not text.startswith('Findings: 3') else '3', '42')])
+                    found = claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, kind, '42', BASE))
+                    self.assertEqual(found, [] if kind is None else [(kind, HEAD, BASE, 'unknown' if not text.startswith('Findings: 3') else '3', '42')])
 
     def test_a_failed_review_has_no_marker(self):
         for status, head, text in (('failure', HEAD, 'Findings: 0'), ('success', 'abc', 'Findings: 0'), ('success', HEAD, ' ')):
@@ -155,16 +164,22 @@ class CommentTest(unittest.TestCase):
     def test_comment_with_a_kind_writes_the_marker(self):
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, 'head.txt').write_text(HEAD + '\n')
+            Path(folder, 'base.txt').write_text(BASE + '\n')
             Path(folder, 'review.txt').write_text('Findings: 0\nNo defect.')
             with mock.patch.dict(os.environ, {'GITHUB_RUN_ID': '42'}):
                 status, out = run('comment', '--status', 'success', '--kind', 'security', '--output-dir', folder)
         self.assertEqual(status, 0)
-        self.assertEqual(claude_review.MARKER.findall(out), [('security', HEAD, '0', '42')])
+        self.assertEqual(claude_review.MARKER.findall(out), [('security', HEAD, BASE, '0', '42')])
 
     def test_the_diff_starts_at_the_base_branch_of_the_pr(self):
         self.assertIn('pr/base...pr/head', WORKFLOW)
         self.assertNotIn('origin/main', WORKFLOW)
         self.assertIn('git check-ref-format --branch "$base"', WORKFLOW)
+
+    def test_the_artifact_holds_the_one_merge_base_of_the_diff(self):
+        self.assertIn('git merge-base --all pr/base pr/head > "$RUNNER_TEMP/output/base.txt"', WORKFLOW)
+        self.assertIn('test "$(wc -l < "$RUNNER_TEMP/output/base.txt")" -eq 1', WORKFLOW)
+        self.assertLess(WORKFLOW.index('base.txt"\n'), WORKFLOW.index('pr/base...pr/head'))
 
     def test_the_post_job_gives_the_kind_of_the_request(self):
         self.assertIn('--kind "$KIND"', WORKFLOW)

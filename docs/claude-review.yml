@@ -30,6 +30,8 @@ jobs:
           persist-credentials: false
       # The PR commits stay Git objects. The job never checks out PR files, so the PR cannot supply instructions, settings or code.
       # The diff starts at the base branch of the PR, so a PR to a branch other than the default branch gets the correct diff.
+      # base.txt holds the merge base that the diff uses. The marker names it, and the gates accept the marker only for the
+      # current merge base. Thus a base change during or after the review stops the marker. A review needs one merge base.
       - name: Write the PR diff
         env:
           PR: ${{ github.event.issue.number }}
@@ -41,6 +43,8 @@ jobs:
           git check-ref-format --branch "$base" > /dev/null
           git fetch --no-tags origin "+refs/heads/${base}:refs/remotes/pr/base" "+refs/pull/${PR}/head:refs/remotes/pr/head"
           git rev-parse pr/head > "$RUNNER_TEMP/output/head.txt"
+          git merge-base --all pr/base pr/head > "$RUNNER_TEMP/output/base.txt"
+          test "$(wc -l < "$RUNNER_TEMP/output/base.txt")" -eq 1
           git diff --no-ext-diff --no-textconv -U20 pr/base...pr/head > "$RUNNER_TEMP/input/pr.diff"
           test -s "$RUNNER_TEMP/input/pr.diff"
       - name: Write the fixed prompt
@@ -69,7 +73,7 @@ jobs:
           claude -p --restricted --tools "Read,Grep,Glob" --disallowed-tools "Read(//proc/**),Grep(//proc/**),Glob(//proc/**)" --add-dir "$RUNNER_TEMP/input" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 40 --output-format json < "$RUNNER_TEMP/prompt.txt" > "$RUNNER_TEMP/result.json"
       - name: Check the result
         run: python3 -B tools/claude_review.py check "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/output/review.txt"
-      - name: Keep the review text and the head
+      - name: Keep the review text, the head and the base
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -93,7 +97,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       # A failed review can have no artifact. The script then posts the failure text.
-      - name: Get the review text and the head
+      - name: Get the review text, the head and the base
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
