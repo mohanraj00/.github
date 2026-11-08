@@ -251,6 +251,12 @@ class GitHub:
             raise
         return data if isinstance(data, dict) else None
 
+    def merge_base(self, base, head):
+        """Return the current merge base of the base branch and the head, or None."""
+        data = self.call('GET', '/repos/%s/compare/%s...%s' % (self.repo, urllib.parse.quote(base, safe='/'), head))
+        sha = ((data or {}).get('merge_base_commit') or {}).get('sha') or ''
+        return sha if re.fullmatch(r'[0-9a-f]{40}', sha) else None
+
     def compare(self, old, new):
         """Return (old is an ancestor of new, changed paths, complete)."""
         data = self.call('GET', '/repos/%s/compare/%s...%s' % (self.repo, old, new))
@@ -388,19 +394,24 @@ def trusted_run(gh, pr, run_id, item):
 
 def claude_results(gh, pr, comments, changed, kind):
     """Return [(head, findings)] oldest first from the Claude workflow comments of this kind after the last base change.
-    A marker counts only if its run is trusted and no other comment names the same run."""
+    A marker counts only if its run is trusted, no other comment names the same run, and its base is the current merge base.
+    The merge base does not change when a commit merges into the base branch, so an open PR keeps its review."""
     bot = [item for item in comments if (item.get('user') or {}).get('login') == BOT]
     claims = {}
     for item in bot:
         for marker in CLAUDE_MARKER.findall(item.get('body') or ''):
-            claims[marker[3]] = claims.get(marker[3], 0) + 1
-    results = []
+            claims[marker[4]] = claims.get(marker[4], 0) + 1
+    results, current = [], []
     for item in bot:
         if not after(item, changed):
             continue
         body = item.get('body') or ''
-        for found_kind, head, findings, run in CLAUDE_MARKER.findall(body):
-            if found_kind == kind and claims[run] == 1 and trusted_run(gh, pr, run, item):
+        for found_kind, head, base, findings, run in CLAUDE_MARKER.findall(body):
+            if found_kind != kind or claims[run] != 1:
+                continue
+            if not current:
+                current.append(gh.merge_base(pr['base']['ref'], pr['head']['sha']))
+            if base == current[0] and trusted_run(gh, pr, run, item):
                 results.append((head, findings))
         # A failed review names no kind. It stops an older clean review of the same head for each kind.
         failed = CLAUDE_FAILED.match(body)
