@@ -2,7 +2,8 @@ name: Claude review
 # A writer asks for a review with one of the two exact PR comments in docs/REVIEW.md. GitHub compares these texts with no regard to letter case.
 # An issue comment event reads this workflow from main. The comment text selects a fixed prompt, and it never goes into the prompt.
 # The post job writes a marker for the cross-review and security-review gates. The project copies gates/claude_review.py
-# of mohanraj00/.github to tools/claude_review.py.
+# of mohanraj00/.github to tools/claude_review.py. Keep this file at .github/workflows/claude-review.yml: the marker holds
+# the run ID, and the gates accept it only from an issue_comment run of the workflow at that path.
 on:
   issue_comment:
     types: [created]
@@ -19,6 +20,8 @@ jobs:
     environment: claude-review
     permissions:
       contents: read
+      # The diff step reads the base branch of the PR from the API.
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -26,14 +29,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       # The PR commits stay Git objects. The job never checks out PR files, so the PR cannot supply instructions, settings or code.
+      # The diff starts at the base branch of the PR, so a PR to a branch other than the default branch gets the correct diff.
       - name: Write the PR diff
         env:
           PR: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir "$RUNNER_TEMP/input" "$RUNNER_TEMP/output"
-          git fetch --no-tags origin "+refs/pull/${PR}/head:refs/remotes/pr/head"
+          base="$(gh api "repos/${REPOSITORY}/pulls/${PR}" --jq .base.ref)"
+          git check-ref-format --branch "$base" > /dev/null
+          git fetch --no-tags origin "+refs/heads/${base}:refs/remotes/pr/base" "+refs/pull/${PR}/head:refs/remotes/pr/head"
           git rev-parse pr/head > "$RUNNER_TEMP/output/head.txt"
-          git diff --no-ext-diff --no-textconv -U20 origin/main...pr/head > "$RUNNER_TEMP/input/pr.diff"
+          git diff --no-ext-diff --no-textconv -U20 pr/base...pr/head > "$RUNNER_TEMP/input/pr.diff"
           test -s "$RUNNER_TEMP/input/pr.diff"
       - name: Write the fixed prompt
         env:

@@ -40,12 +40,24 @@ def comment(login, body, at='2026-11-07T10:00:00Z', updated=None):
     return {'user': {'login': login}, 'body': body, 'created_at': at, 'updated_at': updated or at}
 
 
+RUNS = iter(range(1000, 10 ** 6))
+# A run of the Claude workflow that the gates trust. It covers each comment time of the tests.
+TRUSTED_RUN = {'path': gate.CLAUDE_WORKFLOW, 'event': 'issue_comment', 'head_branch': 'main', 'status': 'completed',
+               'run_started_at': '2026-11-07T00:00:00Z', 'updated_at': '2026-11-07T23:00:00Z'}
+
+
+def review_body(status, head, text, kind=None, run=None):
+    """Return a Claude comment. Each comment gets its own run ID, as each run of the workflow posts one comment."""
+    return comment_body(status, head, text, kind, run or str(next(RUNS)))
+
+
 class Fake:
     """The GitHub API of one PR."""
 
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
-                 admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None):
+                 admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None,
+                 runs=None):
         self.repo, self.number = REPO, 7
         self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
         self.clock = gate.stamp(now)
@@ -53,7 +65,7 @@ class Fake:
         self.slept = 0
         self.state = {'labels': [{'name': x} for x in labels], 'body': body,
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
-                      'base': {'ref': 'main'}}
+                      'base': {'ref': 'main', 'repo': {'default_branch': 'main'}}}
         self.file_list = [{'path': x, 'previous': None, 'lines': 10} if isinstance(x, str) else x for x in files]
         self.complete = complete
         self.comment_list = list(comments)
@@ -67,6 +79,7 @@ class Fake:
         self.objects = objects if objects is not None else [HEAD, OLD]
         self.posted, self.removed = [], []
         self.on_sleep = None
+        self.runs = runs
 
     def is_admin(self, login):
         return login in self.admins
@@ -114,6 +127,9 @@ class Fake:
 
     def compare(self, old, new):
         return self.compares[old]
+
+    def workflow_run(self, run_id):
+        return dict(TRUSTED_RUN) if self.runs is None else self.runs.get(run_id)
 
     def post_comment(self, body):
         self.posted.append(body)
@@ -318,7 +334,7 @@ class SecurityTest(unittest.TestCase):
 
     def test_a_codex_result_with_findings_stops_the_claude_fallback(self):
         comments = [comment(gate.CODEX, OPEN_RECEIPT % HEAD[:10], '2026-11-07T10:00:00Z'),
-                    comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'security'), '2026-11-07T11:00:00Z')]
+                    comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'security'), '2026-11-07T11:00:00Z')]
         self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=comments))[0])
         comments[0] = comment(gate.CODEX, '### Codex Security Review\n\nCommit: x', '2026-11-07T10:00:00Z')
         self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=comments))[0])  # A malformed receipt permits the fallback.
@@ -351,11 +367,11 @@ class SecurityTest(unittest.TestCase):
         self.assertFalse(check('security-review', fake)[0])
 
     def test_a_clean_claude_security_review_passes(self):
-        body = comment_body('success', HEAD, 'Findings: 0\nNo defect.', 'security')
+        body = review_body('success', HEAD, 'Findings: 0\nNo defect.', 'security')
         self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=[comment(gate.BOT, body)]))[0])
-        for body, login in ((comment_body('success', HEAD, 'Findings: 1\nA.', 'security'), gate.BOT),
-                            (comment_body('success', HEAD, 'Findings: 0', 'code'), gate.BOT),
-                            (comment_body('success', HEAD, 'Findings: 0', 'security'), 'mohanraj00')):
+        for body, login in ((review_body('success', HEAD, 'Findings: 1\nA.', 'security'), gate.BOT),
+                            (review_body('success', HEAD, 'Findings: 0', 'code'), gate.BOT),
+                            (review_body('success', HEAD, 'Findings: 0', 'security'), 'mohanraj00')):
             with self.subTest(body=body, login=login):
                 self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=[comment(login, body)]))[0])
 
@@ -428,29 +444,51 @@ class CrossReviewTest(unittest.TestCase):
         self.assertFalse(check('cross-review', Fake(comments=comments))[0])
 
     def test_a_failed_claude_review_stops_an_older_clean_review_of_the_head(self):
-        comments = [comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T10:00:00Z'),
-                    comment(gate.BOT, comment_body('failure', HEAD, ''), '2026-11-07T11:00:00Z')]
+        comments = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T10:00:00Z'),
+                    comment(gate.BOT, review_body('failure', HEAD, ''), '2026-11-07T11:00:00Z')]
         self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=comments))[0])
-        comments = [comments[1], comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T12:00:00Z')]
+        comments = [comments[1], comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code'), '2026-11-07T12:00:00Z')]
         self.assertTrue(check('cross-review', Fake(ref='codex/7', issues=[], comments=comments))[0])  # A new clean review passes.
 
     def test_a_codex_or_agy_pr_needs_a_clean_claude_review_of_the_head(self):
-        clean = comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0\nNo defect.', 'code'))
+        clean = comment(gate.BOT, review_body('success', HEAD, 'Findings: 0\nNo defect.', 'code'))
         for ref in ('codex/7', 'agy/7'):
             with self.subTest(ref=ref):
                 self.assertTrue(check('cross-review', Fake(ref=ref, issues=[], comments=[clean]))[0])
                 self.assertFalse(check('cross-review', Fake(ref=ref, issues=[], comments=[comment(gate.CODEX, state())]))[0])
-        for body, login in ((comment_body('success', HEAD, 'Findings: 2\nA.', 'code'), gate.BOT),
-                            (comment_body('success', HEAD, 'No count.', 'code'), gate.BOT),
-                            (comment_body('success', OLD, 'Findings: 0', 'code'), gate.BOT),
-                            (comment_body('success', HEAD, 'Findings: 0', 'security'), gate.BOT),
-                            (comment_body('success', HEAD, 'Findings: 0', 'code'), 'mohanraj00'),
-                            ('<!-- claude-review:v1 kind=code head=%s findings=0 -->' % HEAD, 'mohanraj00')):
+        for body, login in ((review_body('success', HEAD, 'Findings: 2\nA.', 'code'), gate.BOT),
+                            (review_body('success', HEAD, 'No count.', 'code'), gate.BOT),
+                            (review_body('success', OLD, 'Findings: 0', 'code'), gate.BOT),
+                            (review_body('success', HEAD, 'Findings: 0', 'security'), gate.BOT),
+                            (review_body('success', HEAD, 'Findings: 0', 'code'), 'mohanraj00'),
+                            ('<!-- claude-review:v1 kind=code head=%s findings=0 run=55 -->' % HEAD, 'mohanraj00')):
             with self.subTest(body=body, login=login):
                 self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=[comment(login, body)]))[0])
 
+    def test_a_claude_marker_needs_a_trusted_run(self):
+        code = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code', run='55'))]
+        security = [comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'security', run='55'))]
+        self.assertTrue(check('cross-review', Fake(ref='codex/7', issues=[], comments=code, runs={'55': TRUSTED_RUN}))[0])
+        self.assertTrue(check('security-review', Fake(files=['src/a.py'], comments=security, runs={'55': TRUSTED_RUN}))[0])
+        changes = ({'path': '.github/workflows/other.yml'}, {'event': 'push'}, {'event': 'workflow_dispatch'},
+                   {'head_branch': 'helper'}, {'status': 'in_progress'}, {'run_started_at': '2026-11-07T12:30:00Z'},
+                   {'updated_at': '2026-11-07T09:00:00Z'}, None)
+        for change in changes:
+            with self.subTest(change=change):
+                runs = {} if change is None else {'55': TRUSTED_RUN | change}
+                self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=code, runs=runs))[0])
+                self.assertFalse(check('security-review', Fake(files=['src/a.py'], comments=security, runs=runs))[0])
+
+    def test_two_comments_that_name_one_run_both_fail(self):
+        forged = review_body('success', HEAD, 'Findings: 0', 'code', run='55')
+        real = review_body('success', HEAD, 'Findings: 2\nA.', 'code', run='55')
+        for comments in ([comment(gate.BOT, real, '2026-11-07T10:00:00Z'), comment(gate.BOT, forged, '2026-11-07T11:00:00Z')],
+                         [comment(gate.BOT, forged, '2026-11-07T10:00:00Z'), comment(gate.BOT, forged, '2026-11-07T11:00:00Z')]):
+            with self.subTest(comments=comments):
+                self.assertFalse(check('cross-review', Fake(ref='codex/7', issues=[], comments=comments))[0])
+
     def test_a_claude_pr_does_not_pass_with_a_claude_review(self):
-        clean = comment(gate.BOT, comment_body('success', HEAD, 'Findings: 0', 'code'))
+        clean = comment(gate.BOT, review_body('success', HEAD, 'Findings: 0', 'code'))
         self.assertFalse(check('cross-review', Fake(comments=[clean]))[0])
 
     def test_the_cross_reviewed_label_needs_an_approval_record(self):

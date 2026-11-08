@@ -33,6 +33,9 @@ CHECKS = ['cross-review', 'security-review', 'acceptance', 'classify']
 CODEX = 'chatgpt-codex-connector[bot]'
 # The workflow token posts as this user. A fork PR cannot post as this user, but a writer can. Thus the gates trust writers.
 BOT = 'github-actions[bot]'
+# A writer can post as BOT from a workflow on a branch. An issue_comment run always uses the workflow of the default branch,
+# so the gates accept a Claude marker only from an issue_comment run of this workflow.
+CLAUDE_WORKFLOW = '.github/workflows/claude-review.yml'
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
 STATE = re.compile(r'<!-- codex-review-state:v1 (.*?) -->')
@@ -235,6 +238,16 @@ class GitHub:
         sha = (data or {}).get('sha') or ''
         return sha if re.fullmatch(r'[0-9a-f]{40}', sha) and sha.startswith(commit) else None
 
+    def workflow_run(self, run_id):
+        """Return the workflow run, or None if it does not exist."""
+        try:
+            data = self.call('GET', '/repos/%s/actions/runs/%s' % (self.repo, run_id))
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return None
+            raise
+        return data if isinstance(data, dict) else None
+
     def compare(self, old, new):
         """Return (old is an ancestor of new, changed paths, complete)."""
         data = self.call('GET', '/repos/%s/compare/%s...%s' % (self.repo, old, new))
@@ -357,15 +370,34 @@ def codex_code(comments, changed):
     return (latest[1] if latest else None), errors
 
 
-def claude_results(comments, changed, kind):
-    """Return [(head, findings)] oldest first from the Claude workflow comments of this kind after the last base change."""
+def trusted_run(gh, pr, run_id, item):
+    """Return True if a completed issue_comment run of the Claude workflow on the default branch posted the comment.
+    The comment time must be in the time of the run."""
+    run = gh.workflow_run(run_id)
+    default = ((pr.get('base') or {}).get('repo') or {}).get('default_branch')
+    if not run or not default or run.get('path') != CLAUDE_WORKFLOW or run.get('event') != 'issue_comment':
+        return False
+    if run.get('head_branch') != default or run.get('status') != 'completed':
+        return False
+    start, end, posted = run.get('run_started_at'), run.get('updated_at'), item.get('created_at')
+    return bool(start and end and posted) and stamp(start) <= stamp(posted) <= stamp(end)
+
+
+def claude_results(gh, pr, comments, changed, kind):
+    """Return [(head, findings)] oldest first from the Claude workflow comments of this kind after the last base change.
+    A marker counts only if its run is trusted and no other comment names the same run."""
+    bot = [item for item in comments if (item.get('user') or {}).get('login') == BOT]
+    claims = {}
+    for item in bot:
+        for marker in CLAUDE_MARKER.findall(item.get('body') or ''):
+            claims[marker[3]] = claims.get(marker[3], 0) + 1
     results = []
-    for item in comments:
-        if (item.get('user') or {}).get('login') != BOT or not after(item, changed):
+    for item in bot:
+        if not after(item, changed):
             continue
         body = item.get('body') or ''
-        for found_kind, head, findings in CLAUDE_MARKER.findall(body):
-            if found_kind == kind:
+        for found_kind, head, findings, run in CLAUDE_MARKER.findall(body):
+            if found_kind == kind and claims[run] == 1 and trusted_run(gh, pr, run, item):
                 results.append((head, findings))
         # A failed review names no kind. It stops an older clean review of the same head for each kind.
         failed = CLAUDE_FAILED.match(body)
@@ -415,7 +447,7 @@ def cross_review(gh, pr, comments, changed):
             lines.append('No completed Codex code review of head %s. Post "@codex review" with "Head: %s" on the next line.' % (head[:12], head[:7]))
     elif builder in ('codex', 'agy'):
         lines.append('Builder: %s, from %s. The code reviewer is the Claude workflow.' % (builder, source))
-        results = [findings for commit, findings in claude_results(comments, changed, 'code') if commit == head]
+        results = [findings for commit, findings in claude_results(gh, pr, comments, changed, 'code') if commit == head]
         if results and results[-1] == '0':
             return True, lines + ['The Claude code review of head %s found no issues.' % head[:12]], drop
         if results:
@@ -470,7 +502,7 @@ def security_review(gh, config, pr, paths, complete, comments, changed):
         return True, lines + ['The Codex security review of %s found no security issues.' % name(commit)], []
     # The Claude result is a fallback. It does not pass over a Codex result with open findings.
     codex_open = bool(results) and bool(results[-1][0]) and not results[-1][1]
-    claude = claude_results(comments, changed, 'security')
+    claude = claude_results(gh, pr, comments, changed, 'security')
     if not codex_open and claude and claude[-1][1] == '0' and covers(claude[-1][0]):
         return True, lines + ['The Claude security review of %s found no security issues.' % name(claude[-1][0])], []
     drop = []

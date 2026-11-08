@@ -34,7 +34,10 @@ PROMPTS={
 }
 FAILED='NO VALID CLAUDE REVIEW'
 # The gates accept only this marker, from the workflow bot. findings is unknown if the model text does not start with a valid count.
-MARKER=re.compile(r'<!-- claude-review:v1 kind=(code|security) head=([0-9a-f]{40}) findings=(\d+|unknown) -->')
+# run is the ID of the workflow run that posts the marker. The gates read this run from the API and accept the marker only
+# if the run is an issue_comment run of the review workflow on the default branch.
+MARKER=re.compile(r'<!-- claude-review:v1 kind=(code|security) head=([0-9a-f]{40}) findings=(\d+|unknown) run=([1-9][0-9]{0,19}) -->')
+RUN=re.compile(r'[1-9][0-9]{0,19}')
 COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
 # The exact request texts. The workflow compares the comment body with these texts.
 REQUESTS={'code':'@claude review this PR. Use the Review guidelines in AGENTS.md.',
@@ -66,16 +69,17 @@ def findings(text):
     found=COUNT.fullmatch(first)
     return found.group(1) if found else 'unknown'
 
-def comment_body(status,head,text,kind=None):
+def comment_body(status,head,text,kind=None,run=None):
     """Return the PR comment. A review that is not valid gives only the fixed failure text and the head.
-    A valid review with a kind starts with the marker. The marker holds only fixed text, the checked head and digits."""
+    A valid review with a kind starts with the marker. The marker holds only fixed text, the checked head and digits.
+    A review with a kind and no valid run ID is not valid."""
     valid=HEAD.fullmatch(head or '')
-    if status!='success' or not valid or not text or not text.strip():
+    if status!='success' or not valid or not text or not text.strip() or (kind in PROMPTS and not RUN.fullmatch(run or '')):
         return '%s\n\nHead: %s'%(FAILED,head if valid else 'unknown')
     if kind not in PROMPTS:
         return 'Claude review of head %s. This review is advisory. No gate reads it.\n\n%s'%(head,neutral(text))
     count=findings(text)
-    return '<!-- claude-review:v1 kind=%s head=%s findings=%s -->\nClaude %s review of head %s. Findings: %s.\n\n%s'%(kind,head,count,kind,head,count,neutral(text))
+    return '<!-- claude-review:v1 kind=%s head=%s findings=%s run=%s -->\nClaude %s review of head %s. Findings: %s.\n\n%s'%(kind,head,count,run,kind,head,count,neutral(text))
 
 def read(path):
     try:return Path(path).read_text(encoding='utf-8').strip('\n')
@@ -122,7 +126,7 @@ def main(argv=None):
         Path(a.out).write_text(text,encoding='utf-8')
     else:
         folder=Path(a.output_dir)
-        body=comment_body(a.status,read(folder/'head.txt'),read(folder/'review.txt'),a.kind)
+        body=comment_body(a.status,read(folder/'head.txt'),read(folder/'review.txt'),a.kind,os.environ.get('GITHUB_RUN_ID'))
         if a.post:call('POST','/repos/%s/issues/%d/comments'%(os.environ['REPOSITORY'],int(os.environ['PR'])),os.environ['GITHUB_TOKEN'],{'body':body})
         else:print(body)
     return 0

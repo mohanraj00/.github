@@ -11,7 +11,7 @@ The composite action in [`gates/`](gates/action.yml) holds the gates `cross-revi
 2. Copy [`docs/gates-rerun.yml`](docs/gates-rerun.yml) to `.github/workflows/gates-rerun.yml`.
 3. Add `.github/gates.json` with the project rules. The keys are below. The gate reads this file from the base branch, so a PR cannot change the config of its own gate.
 4. Put the project jobs in the skeleton [`docs/ci-ok.yml`](docs/ci-ok.yml), and use the same SHA.
-5. If the project has the Claude review workflow, copy [`gates/claude_review.py`](gates/claude_review.py) to `tools/claude_review.py`. Give the post job the `--kind` argument, as [`docs/claude-review.yml`](docs/claude-review.yml) shows. The gates accept only the marker that this post job writes.
+5. If the project has the Claude review workflow, copy [`gates/claude_review.py`](gates/claude_review.py) to `tools/claude_review.py`. Use [`docs/claude-review.yml`](docs/claude-review.yml) as the workflow, at the path `.github/workflows/claude-review.yml`. Its post job gives the `--kind` argument, and its diff starts at the base branch of the PR. The gates accept a marker only if its run is an `issue_comment` run of this workflow on the default branch. Thus a workflow on a branch cannot make a marker that the gates accept.
 6. In the main ruleset, require the 4 checks `ci-ok`, `cross-review`, `security-review` and `acceptance`.
 7. Remove the old gate workflows and tools of the project, for example `pr-policy.yml` and `tools/pr_policy.py`. The gates also read the approval records of `pr_policy.py`.
 
