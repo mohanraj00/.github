@@ -46,3 +46,7 @@ GitHub Actions has no event for a resolved review thread. If you resolve the las
 ### Known limit
 
 The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed` and `ready-for-review` depend on the rule that agents never add them.
+
+## Constitution template
+
+Each project constitution uses the sections and the exact governance block in [`docs/constitution-template.md`](docs/constitution-template.md). The block has version markers, so a check can compare it with the template.
