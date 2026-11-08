@@ -1,0 +1,109 @@
+name: Claude review
+# A writer asks for a review with one of the two exact PR comments in docs/REVIEW.md. GitHub compares these texts with no regard to letter case.
+# An issue comment event reads this workflow from main. The comment text selects a fixed prompt, and it never goes into the prompt.
+# The post job writes a marker for the cross-review and security-review gates. The project copies gates/claude_review.py
+# of mohanraj00/.github to tools/claude_review.py. Keep this file at .github/workflows/claude-review.yml: the marker holds
+# the run ID, and the gates accept it only from an issue_comment run of the workflow at that path.
+on:
+  issue_comment:
+    types: [created]
+permissions: {}
+jobs:
+  review:
+    if: >-
+      github.event.issue.pull_request &&
+      (github.event.comment.body == '@claude review this PR. Use the Review guidelines in AGENTS.md.' ||
+      github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: claude-review
+    permissions:
+      contents: read
+      # The diff step reads the base branch of the PR from the API.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      # The PR commits stay Git objects. The job never checks out PR files, so the PR cannot supply instructions, settings or code.
+      # The diff starts at the base branch of the PR, so a PR to a branch other than the default branch gets the correct diff.
+      - name: Write the PR diff
+        env:
+          PR: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir "$RUNNER_TEMP/input" "$RUNNER_TEMP/output"
+          base="$(gh api "repos/${REPOSITORY}/pulls/${PR}" --jq .base.ref)"
+          git check-ref-format --branch "$base" > /dev/null
+          git fetch --no-tags origin "+refs/heads/${base}:refs/remotes/pr/base" "+refs/pull/${PR}/head:refs/remotes/pr/head"
+          git rev-parse pr/head > "$RUNNER_TEMP/output/head.txt"
+          git diff --no-ext-diff --no-textconv -U20 pr/base...pr/head > "$RUNNER_TEMP/input/pr.diff"
+          test -s "$RUNNER_TEMP/input/pr.diff"
+      - name: Write the fixed prompt
+        env:
+          KIND: ${{ github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.' && 'security' || 'code' }}
+        run: python3 -B tools/claude_review.py prompt "$KIND" --diff "$RUNNER_TEMP/input/pr.diff" > "$RUNNER_TEMP/prompt.txt"
+      # This is the npm package of the Linux x64 binary. The SHA-512 value is the registry integrity value of this version, in hex.
+      - name: Install the Claude Code CLI
+        env:
+          CLI_VERSION: 2.1.319
+          CLI_SHA512: 14ee12776dc13b554240f8897b9bc6ddb367995e7e6224dabbba3596a2b716be55944e132dd2a2c98a70411c045cef75904da5d76129da2ec9d7d4fc31dda839
+        run: |
+          mkdir "$RUNNER_TEMP/cli"
+          curl --fail --silent --show-error --location --proto '=https' --output "$RUNNER_TEMP/cli/cli.tgz" \
+            "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${CLI_VERSION}.tgz"
+          echo "$CLI_SHA512  $RUNNER_TEMP/cli/cli.tgz" | sha512sum --check --strict
+          tar --extract --gzip --file "$RUNNER_TEMP/cli/cli.tgz" --directory "$RUNNER_TEMP/cli"
+          test "$("$RUNNER_TEMP/cli/package/claude" --version)" = "$CLI_VERSION (Claude Code)"
+          echo "$RUNNER_TEMP/cli/package" >> "$GITHUB_PATH"
+      # Only this step gets the secret. The prompt goes through stdin, because --add-dir and --tools take many values.
+      - name: Run the review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          DISABLE_AUTOUPDATER: '1'
+        run: |
+          claude -p --restricted --tools "Read,Grep,Glob" --disallowed-tools "Read(//proc/**),Grep(//proc/**),Glob(//proc/**)" --add-dir "$RUNNER_TEMP/input" --strict-mcp-config --disable-slash-commands --no-session-persistence --max-turns 40 --output-format json < "$RUNNER_TEMP/prompt.txt" > "$RUNNER_TEMP/result.json"
+      - name: Check the result
+        run: python3 -B tools/claude_review.py check "$RUNNER_TEMP/result.json" "$RUNNER_TEMP/output/review.txt"
+      - name: Keep the review text and the head
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: claude-review
+          path: ${{ runner.temp }}/output
+          if-no-files-found: ignore
+          retention-days: 7
+  post:
+    needs: review
+    if: ${{ always() && needs.review.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      # A comment on a PR needs this permission. The issues permission alone gives HTTP 403.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      # A failed review can have no artifact. The script then posts the failure text.
+      - name: Get the review text and the head
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: claude-review
+          path: ${{ runner.temp }}/output
+      - name: Post the comment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          REPOSITORY: ${{ github.repository }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+          KIND: ${{ github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.' && 'security' || 'code' }}
+        run: python3 -B tools/claude_review.py comment --status "$REVIEW_RESULT" --kind "$KIND" --output-dir "$RUNNER_TEMP/output" --post

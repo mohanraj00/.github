@@ -1,0 +1,74 @@
+name: CI
+# The ci-ok skeleton. Copy this file to .github/workflows/ci.yml of the project, then put the project jobs in it.
+# Replace the SHA of the gates action with a full SHA of mohanraj00/.github on main.
+# A docs-only PR skips the project jobs, and ci-ok still passes. The check job always runs.
+# Do not use paths-ignore, because a required check can then stay pending.
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      # The classify step reads .github/gates.json from the base branch, so a PR cannot mark its own change as docs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+      - id: classify
+        uses: mohanraj00/.github/gates@0000000000000000000000000000000000000000 # Replace with a full SHA of mohanraj00/.github on main.
+        with:
+          check: classify
+  # The project check always runs.
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make check
+  # A project job that runs only for a change that is not docs-only.
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make test
+  # The required check. Add each project job to needs. A skipped job passes. A failed or cancelled job fails.
+  ci-ok:
+    needs: [changes, check, test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Collect the project jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 -B -I -c '
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          bad = sorted(k for k, v in needs.items() if v["result"] not in ("success", "skipped"))
+          if needs.get("changes", {}).get("result") != "success":
+              bad = sorted(set(bad) | {"changes"})
+          print("\n".join("%s: %s" % (k, v["result"]) for k, v in sorted(needs.items())))
+          sys.exit("Failed jobs: " + ", ".join(bad) if bad else 0)
+          '

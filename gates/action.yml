@@ -1,0 +1,28 @@
+name: Project gates
+description: The shared cross-review, security-review and acceptance gates of the project standard, and the classify step of ci-ok.
+inputs:
+  check:
+    description: One of cross-review, security-review, acceptance or classify.
+    required: true
+  token:
+    description: The token for the GitHub API. The caller gives the job permissions.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  code:
+    description: For classify only. true if the project jobs must run.
+    value: ${{ steps.gate.outputs.code }}
+  docs_only:
+    description: For classify only. true for a docs-only change.
+    value: ${{ steps.gate.outputs.docs_only }}
+runs:
+  using: composite
+  steps:
+    # The tools come from the same SHA as this file. The caller checks out the base branch of the project, so
+    # .github/gates.json and the PR template come from the base branch. No PR file runs.
+    - id: gate
+      shell: bash
+      env:
+        GATE_CHECK: ${{ inputs.check }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+      run: python3 -B -I "$GITHUB_ACTION_PATH/gate.py" "$GATE_CHECK"
