@@ -60,7 +60,7 @@ The agents use the owner login. An agent posts each review request in a PR comme
 
 - A code review request is `@codex review`, with `Head: <short SHA>` on the next line. A security review request is a separate comment with the exact text `@codex security review`.
 - A Claude request is one of the two exact texts in `docs/REVIEW.md` of the project.
-- For a fork PR, ask for a review only after the owner adds the `ready-for-review` label.
+- For a fork PR, ask for a review only after the owner approval of stage 2.
 
 ## Security review trigger
 
@@ -159,10 +159,15 @@ Stage 1 is automatic and uses no credits. The `acceptance` check requires:
 - no change to protected paths, unless the owner approved it;
 - a PR description that follows the template.
 
-Stage 2 is the owner's decision. The owner reads the diff, then adds `ready-for-review`. No review starts before this.
+Stage 2 is the owner approval of the current head and base. The owner reads the diff, then does one of these steps:
 
-- The label allows one code review, and one security review if the trigger applies.
-- A push removes the label.
+- Add the `ready-for-review` label. The gate writes an approval record for the head and base.
+- Approve the PR with the GitHub Approve button. Then run the failed `acceptance` job again, because a review does not start the gates.
+
+The `acceptance` check fails for a fork PR without this approval. No review starts before this.
+
+- The approval allows one code review, and one security review if the trigger applies.
+- A push removes the label, and an approval of an earlier commit does not count.
 - Agents never add the label.
 - CI needs approval for all outside contributors.
 

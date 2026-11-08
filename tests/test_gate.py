@@ -57,7 +57,7 @@ class Fake:
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
                  admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None,
-                 runs=None):
+                 runs=None, reviews=()):
         self.repo, self.number = REPO, 7
         self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
         self.clock = gate.stamp(now)
@@ -80,9 +80,13 @@ class Fake:
         self.posted, self.removed = [], []
         self.on_sleep = None
         self.runs = runs
+        self.review_list = list(reviews)
 
     def is_admin(self, login):
         return login in self.admins
+
+    def reviews(self):
+        return self.review_list
 
     def last_labeled(self, issue, label, kind='labeled'):
         if kind == 'unlabeled':
@@ -137,6 +141,13 @@ class Fake:
 
     def remove_label(self, label):
         self.removed.append(label)
+
+
+def approval(commit=HEAD, login='mohanraj00', state='APPROVED', at='2026-11-07T11:00:00Z', number=1):
+    return {'id': number, 'user': {'login': login}, 'state': state, 'commit_id': commit, 'submitted_at': at}
+
+
+APPROVED = [approval()]
 
 
 def event(action='opened', label=None, head=HEAD, sender='mohanraj00'):
@@ -539,12 +550,12 @@ class AcceptanceTest(unittest.TestCase):
         self.assertIn('owner-needed', message)
         self.assertTrue(check('acceptance', Fake(unlabeled={(7, 'owner-needed'): ('mohanraj00', '2026-11-07T11:00:00Z')}))[0])
         self.assertFalse(check('acceptance', Fake(fork=True, unlabeled={(5, 'decision'): ('triage-user', '2026-11-07T11:00:00Z')}))[0])
-        self.assertTrue(check('acceptance', Fake(fork=True, unlabeled={(5, 'decision'): ('mohanraj00', '2026-11-07T11:00:00Z')}))[0])
+        self.assertTrue(check('acceptance', Fake(fork=True, reviews=APPROVED, unlabeled={(5, 'decision'): ('mohanraj00', '2026-11-07T11:00:00Z')}))[0])
 
     def test_a_fork_pr_that_follows_stage1_passes(self):
-        passed, message, _ = check('acceptance', Fake(fork=True))
+        passed, message, _ = check('acceptance', Fake(fork=True, reviews=APPROVED))
         self.assertTrue(passed, message)
-        self.assertIn('fork checks pass', message)
+        self.assertIn('fork checks and the owner approval pass', message)
 
     def test_a_fork_pr_needs_an_accepted_issue(self):
         for issues in ([], [{'number': 5, 'open': False, 'repo': REPO, 'labels': ['accepted']}],
@@ -567,7 +578,7 @@ class AcceptanceTest(unittest.TestCase):
         big = {'path': 'src/a.py', 'previous': None, 'lines': 401}
         self.assertFalse(check('acceptance', Fake(fork=True, files=[big]))[0])
         generated = {'path': 'gen/a.py', 'previous': None, 'lines': 5000}
-        self.assertTrue(check('acceptance', Fake(fork=True, files=[generated, 'src/a.py']))[0])
+        self.assertTrue(check('acceptance', Fake(fork=True, files=[generated, 'src/a.py'], reviews=APPROVED))[0])
 
     def test_a_fork_pr_follows_the_template(self):
         for body in (None, '', TEMPLATE, FILLED.replace('Low. Level 0.', ''), FILLED.replace('## Risk', '## Risks')):
@@ -588,7 +599,9 @@ class AcceptanceTest(unittest.TestCase):
 
     def test_a_push_removes_the_ready_for_review_label_of_a_fork_pr(self):
         fake = Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review', head=OLD)])
-        self.assertTrue(check('acceptance', fake, event('synchronize'))[0])
+        passed, message, _ = check('acceptance', fake, event('synchronize'))
+        self.assertFalse(passed)  # A push after the approval makes the gate fail again.
+        self.assertIn('Stage 2 needs an owner approval', message)
         self.assertEqual(fake.removed, ['ready-for-review'])
         fake = Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review')])
         check('acceptance', fake, event('synchronize'))
@@ -599,6 +612,31 @@ class AcceptanceTest(unittest.TestCase):
         fake = Fake(labels=['ready-for-review'])
         check('acceptance', fake, event('synchronize'))
         self.assertEqual(fake.removed, [])  # The label applies to fork PRs only.
+
+    def test_a_fork_pr_needs_an_owner_approval_of_the_head(self):
+        passed, message, _ = check('acceptance', Fake(fork=True))
+        self.assertFalse(passed)
+        self.assertIn('Stage 2 needs an owner approval of head %s on base main' % HEAD[:12], message)
+        self.assertIn('gh run rerun', message)
+        self.assertTrue(check('acceptance', Fake(fork=True, reviews=APPROVED))[0])
+        fake = Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review')])
+        self.assertTrue(check('acceptance', fake)[0])
+        for reviews in ([approval(OLD)], [approval(login='writer-user')], [approval(state='DISMISSED')],
+                        [approval(state='COMMENTED')], [approval(), approval(state='CHANGES_REQUESTED', at='2026-11-07T12:00:00Z', number=2)],
+                        [approval(at='2026-11-07T09:00:00Z')]):
+            with self.subTest(reviews=reviews):
+                passed, message, _ = check('acceptance', Fake(fork=True, reviews=reviews, base_changed='2026-11-07T10:00:00Z'))
+                self.assertFalse(passed)
+                self.assertIn('Stage 2 needs an owner approval', message)
+        # A comment review after the approval does not change it, as in GitHub.
+        later = [approval(), approval(state='COMMENTED', at='2026-11-07T12:00:00Z', number=2)]
+        self.assertTrue(check('acceptance', Fake(fork=True, reviews=later))[0])
+        self.assertTrue(check('acceptance', Fake(fork=True, reviews=APPROVED, base_changed='2026-11-07T10:00:00Z'))[0])
+
+    def test_a_pr_that_is_not_from_a_fork_needs_no_approval(self):
+        passed, message, _ = check('acceptance', Fake())
+        self.assertTrue(passed, message)
+        self.assertNotIn('Stage 2', message)
 
 
 class MainTest(unittest.TestCase):

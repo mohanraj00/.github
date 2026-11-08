@@ -209,6 +209,9 @@ class GitHub:
         return sum(1 for x in threads['nodes'] if not x['isResolved'] and x['comments']['nodes']
                    and (x['comments']['nodes'][0]['author'] or {}).get('login') in (CODEX, CODEX[:-5]))
 
+    def reviews(self):
+        return self.all_pages('/repos/%s/pulls/%d/reviews' % (self.repo, self.number))
+
     def is_admin(self, login):
         """Only a user with the admin role can approve. A triage or write user can add labels, but not approve."""
         data = self.call('GET', '/repos/%s/collaborators/%s/permission' % (self.repo, urllib.parse.quote(login, safe='')))
@@ -538,6 +541,20 @@ def template_errors(template, body):
     return [k for k, v in want.items() if not have.get(k) or have[k] == v]
 
 
+def approved(gh, head):
+    """Return True if an admin approved the head with a GitHub review after the last base change.
+    The latest review of each user decides. A comment review does not change an approval, as in GitHub.
+    A dismissed review has the state DISMISSED, so it does not count."""
+    changed = gh.base_changed_at()
+    latest = {}
+    for item in sorted(gh.reviews(), key=lambda x: (x.get('submitted_at') or '', x.get('id') or 0)):
+        login = (item.get('user') or {}).get('login')
+        if login and item.get('state') in ('APPROVED', 'CHANGES_REQUESTED', 'DISMISSED'):
+            latest[login] = item
+    return any(x['state'] == 'APPROVED' and x.get('commit_id') == head and after(x, changed, 'submitted_at')
+               and gh.is_admin(login) for login, x in latest.items())
+
+
 def acceptance(gh, config, pr, files, complete, template):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
@@ -565,9 +582,15 @@ def acceptance(gh, config, pr, files, complete, template):
         missing = template_errors(template, pr.get('body'))
         if missing:
             problems.append('Fill these sections of the PR template: ' + ', '.join(missing) + '.')
-        if label_state(gh, 'ready-for-review', labels, (head, base))[1]:
+        ready, stale = label_state(gh, 'ready-for-review', labels, (head, base))
+        if stale:
             drop.append('ready-for-review')
             lines.append('A push after the owner review removes the ready-for-review label.')
+        # Stage 2: the owner approves the current head. A review does not start this gate, so the fail text gives the rerun step.
+        if not ready and not approved(gh, head):
+            problems.append('Stage 2 needs an owner approval of head %s on base %s. The owner reads the diff, then adds the '
+                            'ready-for-review label, or approves the PR and runs the failed acceptance job again, for example '
+                            'with gh run rerun <run-id> --failed.' % (head[:12], show(base)))
     owner = []
     if level1:
         owner.append('level 1 paths changed: ' + ', '.join(show(x) for x in level1))
@@ -579,7 +602,7 @@ def acceptance(gh, config, pr, files, complete, template):
         problems.append('This PR is level 1 (%s). The owner merges this PR with the admin bypass, so auto-merge cannot merge it.' % '; '.join(owner))
     if problems:
         return False, lines + problems, drop
-    return True, lines + ['Level 0: no level 1 path, no owner-needed label%s.' % (', and the fork checks pass' if fork else '')], drop
+    return True, lines + ['Level 0: no level 1 path, no owner-needed label%s.' % (', and the fork checks and the owner approval pass' if fork else '')], drop
 
 
 def run(check, gh, event, config, template=''):
