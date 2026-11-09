@@ -20,6 +20,9 @@ HEAD = 'a' * 40
 OLD = 'b' * 40
 # The merge base of the base branch and HEAD. A Claude marker of the tests names it.
 BASE = 'c' * 40
+# The tip of the base branch, and two SHAs of the gates action.
+TIP = 'f' * 40
+PIN_OLD, PIN_NEW = 'd' * 40, 'e' * 40
 TEMPLATE = (ROOT / '.github/pull_request_template.md').read_text()
 FILLED = 'Closes #5\n\n## Testing\n\n`make check`: 10 tests pass.\n\n## Risk\n\nLow. Level 0.\n\n## How to revert\n\nRevert the commit.\n'
 CONFIG = {'code': ['src/*', 'tests/*'], 'security_sources': ['src/*.py'], 'not_security': ['*/test_*.py'],
@@ -59,7 +62,7 @@ class Fake:
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
                  admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None,
-                 runs=None, reviews=(), merge_base=BASE):
+                 runs=None, reviews=(), merge_base=BASE, contents=None, on_main=()):
         self.repo, self.number = REPO, 7
         self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
         self.clock = gate.stamp(now)
@@ -67,7 +70,9 @@ class Fake:
         self.slept = 0
         self.state = {'labels': [{'name': x} for x in labels], 'body': body,
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
-                      'base': {'ref': 'main', 'repo': {'default_branch': 'main'}}}
+                      'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}}
+        self.contents = contents or {}
+        self.mains = set(on_main)
         self.file_list = [{'path': x, 'previous': None, 'lines': 10} if isinstance(x, str) else x for x in files]
         self.complete = complete
         self.comment_list = list(comments)
@@ -139,6 +144,15 @@ class Fake:
     def merge_base(self, base, head):
         self.merge_bases.append((base, head))
         return self.current_base
+
+    def content(self, repo, path, ref):
+        data = self.contents.get((repo, path, ref))
+        if isinstance(data, Exception):
+            raise data
+        return (gate.blob_sha(data), data) if data is not None else None
+
+    def on_main(self, repo, commit):
+        return repo == gate.UPSTREAM and commit in self.mains
 
     def workflow_run(self, run_id):
         return dict(TRUSTED_RUN) if self.runs is None else self.runs.get(run_id)
@@ -405,6 +419,90 @@ class SecurityTest(unittest.TestCase):
                 passed, message, _ = check('security-review', Fake(files=['src/a.py'], comments=[comment(login, body)]))
                 self.assertFalse(passed)
                 self.assertNotIn('advisory', message)
+
+
+def pinned(sha, note=b' # pin'):
+    return b'jobs:\n  gate:\n    steps:\n      - uses: mohanraj00/.github/gates@' + sha.encode() + note + b'\n'
+
+
+COPY_FILES = ['.github/workflows/gates.yml', 'docs/STANDARD.md', 'tools/claude_review.py', gate.CLAUDE_WORKFLOW]
+
+
+def copies(**change):
+    """Return the contents of a PR that changes the pin from PIN_OLD to PIN_NEW and copies the files of UPSTREAM."""
+    up = gate.UPSTREAM
+    found = {(REPO, gate.PIN_FILE, TIP): pinned(PIN_OLD), (REPO, gate.PIN_FILE, HEAD): pinned(PIN_NEW),
+             (up, 'docs/STANDARD.md', PIN_NEW): b'# Project standard\n',
+             (up, 'gates/claude_review.py', PIN_NEW): b'print(1)\n',
+             (up, 'docs/claude-review.yml', PIN_NEW): pinned('0' * 40, b' # Replace with the SHA.'),
+             (REPO, 'docs/STANDARD.md', HEAD): b'# Project standard\n',
+             (REPO, 'tools/claude_review.py', HEAD): b'print(1)\n',
+             (REPO, gate.CLAUDE_WORKFLOW, HEAD): pinned(PIN_NEW, b' # Replace with the SHA.')}
+    found.update({(REPO, path, HEAD): data for path, data in change.items()})
+    return found
+
+
+class CopyCheckTest(unittest.TestCase):
+    def run_check(self, files=COPY_FILES, contents=None, on_main=(PIN_NEW,)):
+        fake = Fake(files=files, contents=copies() if contents is None else contents, on_main=on_main)
+        return check('security-review', fake)
+
+    def test_a_valid_pin_change_and_exact_copies_pass_with_no_review(self):
+        passed, message, _ = self.run_check()
+        self.assertTrue(passed, message)
+        self.assertIn('No review is necessary.', message)
+        self.assertIn('.github/workflows/gates.yml: the pin changes to eeeeeeeeeeee', message)
+        for path in COPY_FILES[1:]:
+            self.assertIn(path + ': an exact copy of', message)
+
+    def test_one_changed_byte_in_a_copy_needs_a_review(self):
+        passed, message, _ = self.run_check(contents=copies(**{'tools/claude_review.py': b'print(2)\n'}))
+        self.assertFalse(passed)
+        self.assertIn('tools/claude_review.py is not an exact copy', message)
+        self.assertIn('@codex security review', message)
+
+    def test_the_workflow_copy_must_name_the_new_pin(self):
+        contents = copies(**{gate.CLAUDE_WORKFLOW: pinned(PIN_OLD, b' # Replace with the SHA.')})
+        passed, message, _ = self.run_check(contents=contents)
+        self.assertFalse(passed)
+        self.assertIn('.github/workflows/claude-review.yml is not an exact copy', message)
+
+    def test_a_pin_that_is_not_on_main_needs_a_review(self):
+        passed, message, _ = self.run_check(on_main=())
+        self.assertFalse(passed)
+        self.assertIn('The pin eeeeeeeeeeee is not on main of mohanraj00/.github.', message)
+
+    def test_a_pin_line_with_another_change_needs_a_review(self):
+        passed, message, _ = self.run_check(contents=copies(**{gate.PIN_FILE: pinned(PIN_NEW, b' # other')}))
+        self.assertFalse(passed)
+        self.assertIn('.github/workflows/gates.yml is not a copy or a pin change.', message)
+
+    def test_a_copy_and_one_other_listed_path_need_a_review(self):
+        passed, message, _ = self.run_check(files=['docs/STANDARD.md', 'src/a.py'])
+        self.assertFalse(passed)
+        self.assertIn('src/a.py is not a copy or a pin change.', message)
+
+    def test_an_api_error_needs_a_review(self):
+        error = urllib.error.HTTPError('https://api.github.com/x', 500, 'error', {}, io.BytesIO())
+        passed, message, _ = self.run_check(contents=copies(**{'docs/STANDARD.md': error}))
+        self.assertFalse(passed)
+        self.assertIn('The copy check failed closed (HTTPError', message)
+        self.assertIn('@codex security review', message)
+
+    def test_a_review_still_passes_when_the_copy_check_fails(self):
+        fake = Fake(files=['src/a.py'], comments=[comment(gate.CODEX, CLEAN_RECEIPT % HEAD[:10])])
+        passed, message, _ = check('security-review', fake)
+        self.assertTrue(passed, message)
+        self.assertIn('Copy check: ', message)
+
+    def test_security_needed_skips_the_copy_check(self):
+        fake = Fake(files=COPY_FILES, labels=['security-needed'], contents=copies(), on_main=(PIN_NEW,))
+        passed, message, _ = check('security-review', fake)
+        self.assertFalse(passed)
+        self.assertNotIn('No review is necessary.', message)
+
+    def test_the_blob_sha_is_the_git_value(self):
+        self.assertEqual(gate.blob_sha(b''), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391')
 
 
 class CrossReviewTest(unittest.TestCase):
@@ -837,6 +935,26 @@ class MergeBaseTest(unittest.TestCase):
                 self.assertEqual(api.merge_base('release/1 #x', HEAD), found)
                 call.assert_called_once_with('GET', '/repos/%s/compare/release/1%%20%%23x...%s' % (REPO, HEAD))
 
+
+    def test_the_content_comes_from_the_contents_api(self):
+        api = gate.GitHub(REPO, 7, 'sample')
+        data = {'type': 'file', 'encoding': 'base64', 'sha': 'x', 'content': 'cHJpbnQoMSkK\n'}
+        with mock.patch.object(api, 'call', return_value=data) as call:
+            self.assertEqual(api.content(gate.UPSTREAM, 'gates/claude_review.py', HEAD), ('x', b'print(1)\n'))
+            call.assert_called_once_with('GET', '/repos/mohanraj00/.github/contents/gates/claude_review.py?ref=' + HEAD)
+        for data in ({'type': 'dir'}, {'type': 'file', 'encoding': 'none'}, [], None):
+            with self.subTest(data=data), mock.patch.object(api, 'call', return_value=data):
+                self.assertRaises(gate.GateError, api.content, REPO, 'a', HEAD)
+        missing = urllib.error.HTTPError('https://api.github.com/x', 404, 'missing', {}, io.BytesIO())
+        with mock.patch.object(api, 'call', side_effect=missing):
+            self.assertIsNone(api.content(REPO, 'a', HEAD))
+
+    def test_a_commit_is_on_main_if_main_is_ahead_or_identical(self):
+        api = gate.GitHub(REPO, 7, 'sample')
+        for status, found in (('ahead', True), ('identical', True), ('behind', False), ('diverged', False)):
+            with self.subTest(status=status), mock.patch.object(api, 'call', return_value={'status': status}) as call:
+                self.assertEqual(api.on_main(gate.UPSTREAM, PIN_NEW), found)
+                call.assert_called_once_with('GET', '/repos/mohanraj00/.github/compare/%s...main' % PIN_NEW)
 
 if __name__ == '__main__':
     unittest.main()

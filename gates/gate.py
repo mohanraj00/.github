@@ -6,8 +6,10 @@ It never checks out or runs PR code. It reads the PR from the GitHub API and the
 It uses the standard library only, and it calls no host other than the GitHub API.
 """
 import argparse
+import base64
 from datetime import datetime, timezone
 from fnmatch import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -38,6 +40,13 @@ BOT = 'github-actions[bot]'
 # A writer can post as BOT from a workflow on a branch. An issue_comment run always uses the workflow of the default branch,
 # so the gates accept a Claude marker only from an issue_comment run of this workflow.
 CLAUDE_WORKFLOW = '.github/workflows/claude-review.yml'
+# A project keeps exact copies of these files of UPSTREAM, at the SHA that its gates action pins.
+# The paths come from "Adopt the gates in a project" in README.md. The workflow copy differs only in the pin.
+UPSTREAM = 'mohanraj00/.github'
+COPIES = {'docs/STANDARD.md': 'docs/STANDARD.md', 'tools/claude_review.py': 'gates/claude_review.py',
+          CLAUDE_WORKFLOW: 'docs/claude-review.yml'}
+PIN_FILE = '.github/workflows/gates.yml'
+PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
 STATE = re.compile(r'<!-- codex-review-state:v1 (.*?) -->')
@@ -267,6 +276,23 @@ class GitHub:
         paths = [p for x in files for p in [x['filename']] + ([x['previous_filename']] if x.get('previous_filename') else [])]
         return data.get('status') in ('ahead', 'identical'), paths, len(files) < COMPARE_FILES
 
+    def content(self, repo, path, ref):
+        """Return (blob SHA, bytes) of the file at the commit, or None if the file does not exist."""
+        try:
+            data = self.call('GET', '/repos/%s/contents/%s?ref=%s' % (repo, urllib.parse.quote(path), ref))
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return None
+            raise
+        if not isinstance(data, dict) or data.get('type') != 'file' or data.get('encoding') != 'base64':
+            raise GateError('The GitHub API did not give the content of %s.' % show(path))
+        return data['sha'], base64.b64decode(data['content'])
+
+    def on_main(self, repo, commit):
+        """Return True if the commit is on the main branch of the repository."""
+        data = self.call('GET', '/repos/%s/compare/%s...main' % (repo, commit))
+        return data.get('status') in ('ahead', 'identical')
+
     def post_comment(self, body):
         self.call('POST', '/repos/%s/issues/%d/comments' % (self.repo, self.number), {'body': body})
 
@@ -487,6 +513,59 @@ def cross_review(gh, pr, comments, changed):
     return False, lines, drop
 
 
+def blob_sha(data):
+    """Return the Git blob SHA of the bytes."""
+    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+def pin_change(before, after):
+    """Return the new SHA if the file changes only the SHA in its pin lines, else None. Each file is (blob SHA, bytes) or None."""
+    if not before or not after:
+        return None
+    old, new = before[1].splitlines(True), after[1].splitlines(True)
+    if len(old) != len(new):
+        return None
+    shas = set()
+    for a, b in zip(old, new):
+        if a != b:
+            if PIN.sub(rb'\1', a) != PIN.sub(rb'\1', b):
+                return None
+            shas |= {x[1].decode() for x in PIN.findall(b)}
+    return shas.pop() if len(shas) == 1 else None
+
+
+def copy_check(gh, pr, listed):
+    """Return (proved lines, None) if each listed path is a proved copy or a proved pin change, else (None, reason).
+    The old pin comes from the base branch. The copies must agree with UPSTREAM at the new pin, by the Git blob SHA."""
+    head, base = pr['head']['sha'], pr['base']['sha']
+    found = gh.content(gh.repo, PIN_FILE, base)
+    pins = {x[1].decode() for x in PIN.findall(found[1])} if found else set()
+    if len(pins) != 1:
+        return None, 'The base branch has no single pin of the gates action in %s.' % PIN_FILE
+    changes = {}
+    for path in listed:
+        if path not in COPIES:
+            changes[path] = pin_change(gh.content(gh.repo, path, base), gh.content(gh.repo, path, head))
+            if not changes[path]:
+                return None, '%s is not a copy or a pin change.' % show(path)
+    pin = changes.get(PIN_FILE, pins.pop())
+    if set(changes.values()) - {pin}:
+        return None, 'The pin changes do not all name %s.' % pin[:12]
+    if not gh.on_main(UPSTREAM, pin):
+        return None, 'The pin %s is not on main of %s.' % (pin[:12], UPSTREAM)
+    proved = ['%s: the pin changes to %s, on main of %s.' % (show(x), pin[:12], UPSTREAM) for x in changes]
+    for path in listed:
+        if path in COPIES:
+            copy, source = gh.content(gh.repo, path, head), gh.content(UPSTREAM, COPIES[path], pin)
+            if not copy or not source:
+                return None, 'Cannot read %s or %s of %s at %s.' % (show(path), COPIES[path], UPSTREAM, pin[:12])
+            expected = blob_sha(PIN.sub(rb'\g<1>' + pin.encode(), source[1])) if path == CLAUDE_WORKFLOW else source[0]
+            if copy[0] != expected:
+                return None, '%s is not an exact copy of %s of %s at %s.' % (show(path), COPIES[path], UPSTREAM, pin[:12])
+            proved.append('%s: an exact copy of %s of %s at %s.' % (show(path), COPIES[path], UPSTREAM, pin[:12]))
+    return proved, None
+
+
 def security_review(gh, config, pr, paths, complete, comments, changed):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
@@ -495,6 +574,15 @@ def security_review(gh, config, pr, paths, complete, comments, changed):
     if complete and not listed and not forced:
         return True, ['No listed path changed.'], []
     lines = []
+    if complete and not forced:
+        # An exact copy of the gate files and a pin change need no new review. The review of UPSTREAM covers them.
+        try:
+            proved, reason = copy_check(gh, pr, listed)
+        except (OSError, GateError, KeyError, TypeError, ValueError) as error:
+            proved, reason = None, 'The copy check failed closed (%s: %s).' % (type(error).__name__, show(error))
+        if proved:
+            return True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, []
+        lines.append('Copy check: ' + reason)
     if not complete:
         lines.append('The PR has more files than GitHub lists, so the change is security relevant.')
     if listed:

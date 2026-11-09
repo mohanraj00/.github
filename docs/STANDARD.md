@@ -1,6 +1,6 @@
 # Project standard
 
-Version: 5
+Version: 6
 
 ## Documents
 
@@ -26,6 +26,15 @@ A harness loads instructions only from its checkout. Thus, the rule text must be
 
 The label `agent:claude-code` in nookku becomes `agent:claude`. Open branches keep their names until they merge.
 
+## Threat model
+
+The gates protect against these actors:
+
+- a fork contributor with no write access;
+- text in a diff or in a file that steers a model reviewer.
+
+The gates do not protect against an actor with write access. That actor uses the owner login and has the admin bypass, so a gate cannot stop it. The rules for agents control that actor.
+
 ## Reviews
 
 | Builder | Code reviewer | Security reviewer | Security fallback |
@@ -49,6 +58,13 @@ The label `agent:claude-code` in nookku becomes `agent:claude`. Open branches ke
 - The fallback starts if Codex reports a limit, or gives no result in 30 minutes. The 30 minutes is an estimate.
 - CI cannot verify a local agy result. For a local agy security result, the owner adds the `security-reviewed` label.
 - A Claude workflow security result is advisory. The `security-review` gate does not accept it. The owner reads the review, then adds the `security-reviewed` label. This is the same rule as for a local agy security result.
+
+The gates are the files of `mohanraj00/.github` and their copies in each project. Use this stop rule for a finding in the gates:
+
+- Fix a finding in the gates now if an actor of the threat model can reach it, and its severity is P0 or P1.
+- Otherwise, add it to "Known limits" in `README.md` of `mohanraj00/.github`, close the finding with a reason, and do not change code.
+- Collect the other fixes of the gates in one release each month. A project repins one time for each release.
+- A reviewer disagreement about the threat model goes to the owner.
 
 The review guidelines in `AGENTS.md` are short. They state what a failure looks like in the project, the paths to skip and the limit for nits. If a finding occurs again, add a check, a test or a line in these guidelines.
 
@@ -77,6 +93,13 @@ The shared categories are:
 Each project names its boundary files. It does not list all of its source. A code reviewer can report that a security review is necessary. Then the author adds the `security-needed` label, and the gate requires the review.
 
 After a clean security review, a new push needs a new review only if the new commits touch a listed path.
+
+The security review of `mohanraj00/.github` covers the copies of its files in each project. Thus these listed changes need no review:
+
+- an exact copy of a file of `mohanraj00/.github` at the pinned SHA;
+- a change of only the SHA in a pin line of the gates action, if the new SHA is on `main` of `mohanraj00/.github`.
+
+The gate proves each one. Each other listed change still needs a review. The PR stays level 1.
 
 ## Docs-only PRs
 
