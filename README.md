@@ -36,22 +36,25 @@ The action holds the shared categories: the workflows, the agent instructions an
 
 - `cross-review` finds the builder from the first `agent:*` label of the linked issue, then from the branch prefix. A Claude-built PR, or a PR with no harness, needs a completed Codex code review of the current head. A Codex-built or agy-built PR needs a Claude workflow review of the current head with `Findings: 0`. The marker of the review must name the current merge base of the base branch and the head. A new commit on the base branch does not change the merge base, so the review stays valid. A base change of the PR stops the review. The `cross-reviewed` label with an approval record is the fallback for an agy or owner review.
 - `security-review` passes if no listed path changed. Otherwise it needs a clean Codex security receipt, or the `security-reviewed` label with an approval record. A clean Claude security review is advisory. The gate writes a line about it, and the owner adds the `security-reviewed` label after the owner reads the review. A Codex security receipt with open findings stops the pass. After a clean review, a new push needs a new review only if the new commits touch a listed path. The `security-needed` label forces a review of the current head.
+- The copy check of `security-review` reads the old pin from `.github/workflows/gates.yml` of the base branch. A listed path passes with no review if it is an exact copy of its file in this repository at the new pin, by the Git blob SHA. The copy paths are the paths of "Adopt the gates in a project". The copy of `claude-review.yml` can differ from the template only in the SHA of the gates action, and only with the new pin. A listed path also passes if it changes only the SHA in its `mohanraj00/.github/gates@<SHA>` lines to the new pin. The compare API must show the new pin on `main` of this repository. If each listed path is proved, the check passes and writes each proved path. If the API gives an error, the copy check fails closed, and the PR needs a review.
 - `claude-review` is the `gate` job of the Claude review workflow. It runs before the `review` job, with no environment and no secret. For a fork PR, it requires the stage 2 owner approval of the current head and base, with the same code as `acceptance`. It stops a request if a trusted marker of the same kind names the current head and merge base, or if the PR has 3 trusted markers of the same kind. The post job then posts the reason, and the job log has it. On a pass, it gives the head, the base and the merge base to the `review` job. The `review` job fails if the PR head, base or merge base changed after the gate. The workflow has a concurrency group for each PR, so the requests on one PR run one at a time. A new pending request replaces an older pending request, and the older request posts no comment.
 - `acceptance` applies stage 1 and stage 2 of "Fork PRs" to a fork PR. Stage 2 needs an owner approval of the current head and base: an admin review with the state `APPROVED` for the head, or the `ready-for-review` label with its approval record. The latest review of each user decides, and a dismissed review does not count. For each PR, it fails if a level 1 path changed or if the PR has the `owner-needed` label. Then the owner merges the PR with the admin bypass, and auto-merge cannot merge it. A push removes the `ready-for-review` label from a fork PR.
 
 When a user with the admin role adds `accepted`, `ready-for-review`, `security-reviewed` or `cross-reviewed` to a PR, the gate posts an approval record for that head and base. A label from a triage or write user gets no record. For a fork PR, an admin must add the `accepted` label of the linked issue. A label without a record for the current head and base is not valid, and the gate removes it.
 
-If the API gives an error, or a receipt has an unknown format, the gate fails. It does not pass. A change to the labels of a linked issue does not start the gates. Edit the PR, or run the failed jobs again.
+If the API gives an error, or a receipt has an unknown format, the gate fails. It does not pass.
 
 Only an admin can clear the blocking labels `owner-needed`, `security-needed` and the `decision` label of a linked issue. If another user removes one of them, the gate still applies it.
 
-A review does not start the gates. For a fork PR, the `pull_request_review` event runs the workflow file of the PR with a read-only token, so the gates do not use it. After you approve a fork PR with the Approve button, run the failed `acceptance` job again, for example with `gh run rerun <run-id> --failed`. The `ready-for-review` label starts the gates, so it needs no rerun.
-
-GitHub Actions has no event for a resolved review thread. If you resolve the last Codex thread without a push, run the failed `cross-review` job again, for example with `gh run rerun <run-id> --failed`.
-
 ### Known limits
 
+This section holds each known limit of the gates. A finding that the stop rule of the standard does not fix also goes here, with its reason. The threat model of the standard excludes an actor with write access.
+
+#### Owner login
+
 The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed` and `ready-for-review` depend on the rule that agents never add them.
+
+#### Count of a model review
 
 The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The marker gives `findings=unknown` if the text of a Claude review does not agree with the count on its first line:
 
@@ -61,6 +64,22 @@ The gates trust the finding count of a model review. The Codex security receipt 
 - The count is 0, and a severity tag P0 to P3 is at any position in a later line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
 
 The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. A prompt injection in the diff can cause these two results.
+
+#### Events that do not start the gates
+
+A change to the labels of a linked issue does not start the gates. Edit the PR, or run the failed jobs again.
+
+A review does not start the gates. For a fork PR, the `pull_request_review` event runs the workflow file of the PR with a read-only token, so the gates do not use it. After you approve a fork PR with the Approve button, run the failed `acceptance` job again, for example with `gh run rerun <run-id> --failed`. The `ready-for-review` label starts the gates, so it needs no rerun.
+
+GitHub Actions has no event for a resolved review thread. If you resolve the last Codex thread without a push, run the failed `cross-review` job again, for example with `gh run rerun <run-id> --failed`.
+
+#### Base change during a Claude review (#16)
+
+If the base of a PR changes while a Claude review runs, the run does not stop. It uses the OAuth token to the end and posts a review of the old diff. Its marker counts toward the cap of 3. The gates accept the marker only if it names the current merge base. A user with write access can do this on each PR, and the threat model excludes that actor. A fork author can also change the base, but a fork run starts only after the owner approval of the head and base. Thus a fork author can make the one run of an approval useless, but cannot make a marker that a gate accepts.
+
+#### Burst of Claude review requests (#19, item 2)
+
+The `gate` job and the concurrency group limit the Claude runs for each PR. A user with write access can still post requests on many PRs in a short time. Each run uses the OAuth token for up to 30 minutes. The threat model excludes that actor, so the gates do not limit the runs across PRs.
 
 ## Constitution template
 
