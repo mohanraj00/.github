@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The shared PR gates: cross-review, security-review and acceptance, and the classify step of ci-ok.
+"""The shared PR gates: cross-review, security-review and acceptance, the classify step of ci-ok, and the gate job of the Claude review.
 
 The caller workflow runs this file from the base branch of the project, through the composite action in this folder.
 It never checks out or runs PR code. It reads the PR from the GitHub API and the project config from the base checkout.
@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claude_review import FAILED, MARKER as CLAUDE_MARKER  # noqa: E402
+from claude_review import FAILED, MARKER as CLAUDE_MARKER, REQUESTS as CLAUDE_REQUESTS  # noqa: E402
 
 API = 'https://api.github.com'
 # GitHub lists at most 3000 files for a PR. A longer list is security relevant and level 1.
@@ -27,7 +27,9 @@ PAGES = 30
 # The compare API lists at most 300 files.
 COMPARE_FILES = 300
 FORK_LINES = 400
-CHECKS = ['cross-review', 'security-review', 'acceptance', 'classify']
+CHECKS = ['cross-review', 'security-review', 'acceptance', 'classify', 'claude-review']
+# The standard allows at most this number of reviews of one kind for each PR.
+CLAUDE_CAP = 3
 
 # The Codex GitHub integration posts as this app. A user cannot post as an app.
 CODEX = 'chatgpt-codex-connector[bot]'
@@ -58,6 +60,7 @@ BIND = {
     'security-review': ('security-reviewed',),
     'cross-review': ('cross-reviewed',),
     'classify': (),
+    'claude-review': (),
 }
 
 
@@ -392,15 +395,21 @@ def trusted_run(gh, pr, run_id, item):
     return bool(start and end and posted) and stamp(start) <= stamp(posted) <= stamp(end)
 
 
-def claude_results(gh, pr, comments, changed, kind):
-    """Return [(head, findings)] oldest first from the Claude workflow comments of this kind after the last base change.
-    A marker counts only if its run is trusted, no other comment names the same run, and its base is the current merge base.
-    The merge base does not change when a commit merges into the base branch, so an open PR keeps its review."""
+def run_claims(comments):
+    """Return (the comments of the workflow bot, {run ID: the number of markers that name it})."""
     bot = [item for item in comments if (item.get('user') or {}).get('login') == BOT]
     claims = {}
     for item in bot:
         for marker in CLAUDE_MARKER.findall(item.get('body') or ''):
             claims[marker[4]] = claims.get(marker[4], 0) + 1
+    return bot, claims
+
+
+def claude_results(gh, pr, comments, changed, kind):
+    """Return [(head, findings)] oldest first from the Claude workflow comments of this kind after the last base change.
+    A marker counts only if its run is trusted, no other comment names the same run, and its base is the current merge base.
+    The merge base does not change when a commit merges into the base branch, so an open PR keeps its review."""
+    bot, claims = run_claims(comments)
     results, current = [], []
     for item in bot:
         if not after(item, changed):
@@ -566,15 +575,31 @@ def approved(gh, head):
                and gh.is_admin(login) for login, x in latest.items())
 
 
+def from_fork(gh, pr):
+    return (pr['head'].get('repo') or {}).get('full_name') != gh.repo
+
+
+def fork_line(pr):
+    return 'This PR comes from the fork %s.' % show((pr['head'].get('repo') or {}).get('full_name') or 'that GitHub deleted')
+
+
+def stage2(gh, labels, head, base):
+    """Return (approved, stale) for stage 2 of "Fork PRs": the owner approval of the current head and base.
+    An admin review with the state APPROVED for the head, or the ready-for-review label with its approval record, is
+    an approval. stale is true if the label has no record for the current head and base, so the label must go."""
+    ready, stale = label_state(gh, 'ready-for-review', labels, (head, base))
+    return ready or approved(gh, head), stale
+
+
 def acceptance(gh, config, pr, files, complete, template):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
-    fork = (pr['head'].get('repo') or {}).get('full_name') != gh.repo
+    fork = from_fork(gh, pr)
     paths = [p for x in files for p in [x['path']] + ([x['previous']] if x['previous'] else [])]
     level1 = classify(config, paths)['level1']
     lines, problems, drop = [], [], []
     if fork:
-        lines.append('This PR comes from the fork %s. Stage 1 of "Fork PRs" applies.' % show((pr['head'].get('repo') or {}).get('full_name') or 'that GitHub deleted'))
+        lines.append(fork_line(pr) + ' Stage 1 of "Fork PRs" applies.')
         issues = gh.linked_issues()
         accepted = [x for x in issues if x['open'] and x['repo'] == gh.repo and 'accepted' in x['labels']
                     and not blocks(gh, x['number'], 'decision', set(x['labels']))]
@@ -593,12 +618,12 @@ def acceptance(gh, config, pr, files, complete, template):
         missing = template_errors(template, pr.get('body'))
         if missing:
             problems.append('Fill these sections of the PR template: ' + ', '.join(missing) + '.')
-        ready, stale = label_state(gh, 'ready-for-review', labels, (head, base))
+        ready, stale = stage2(gh, labels, head, base)
         if stale:
             drop.append('ready-for-review')
             lines.append('A push after the owner review removes the ready-for-review label.')
         # Stage 2: the owner approves the current head. A review does not start this gate, so the fail text gives the rerun step.
-        if not ready and not approved(gh, head):
+        if not ready:
             problems.append('Stage 2 needs an owner approval of head %s on base %s. The owner reads the diff, then adds the '
                             'ready-for-review label, or approves the PR and runs the failed acceptance job again, for example '
                             'with gh run rerun <run-id> --failed.' % (head[:12], show(base)))
@@ -614,6 +639,52 @@ def acceptance(gh, config, pr, files, complete, template):
     if problems:
         return False, lines + problems, drop
     return True, lines + ['Level 0: no level 1 path, no owner-needed label%s.' % (', and the fork checks and the owner approval pass' if fork else '')], drop
+
+
+def claude_markers(gh, pr, comments, kind):
+    """Return [(head, base, comment)] oldest first for each trusted Claude marker of this kind on the PR, for each base.
+    A marker is trusted if no other comment names its run, and its run is trusted."""
+    bot, claims = run_claims(comments)
+    return [(head, base, item) for item in bot for found, head, base, _, run in CLAUDE_MARKER.findall(item.get('body') or '')
+            if found == kind and claims[run] == 1 and trusted_run(gh, pr, run, item)]
+
+
+def claude_request(gh, pr, comments, changed, kind):
+    """The gate job of the Claude review. It runs before the review job, and it has no secret.
+    For a fork PR, it needs the stage 2 approval of acceptance. It applies the request rules of the standard: one review
+    of each kind for each head and merge base, and at most CLAUDE_CAP reviews of each kind for each PR."""
+    labels = {x['name'] for x in pr['labels']}
+    head, base = pr['head']['sha'], pr['base']['ref']
+    lines, problems = [], []
+    if from_fork(gh, pr):
+        lines.append(fork_line(pr))
+        if not stage2(gh, labels, head, base)[0]:
+            problems.append('Stage 2 needs an owner approval of head %s on base %s before a review. The owner reads the diff, '
+                            'then adds the ready-for-review label or approves the PR. Then ask for the review again.' % (head[:12], show(base)))
+    markers = claude_markers(gh, pr, comments, kind)
+    if len(markers) >= CLAUDE_CAP:
+        problems.append('The PR has %d trusted Claude %s reviews. The cap is %d for each PR. Examine the approach, then '
+                        'report to the owner.' % (len(markers), kind, CLAUDE_CAP))
+    current = gh.merge_base(base, head)
+    if not current:
+        problems.append('The gate cannot get the merge base of head %s and base %s.' % (head[:12], show(base)))
+    elif any(h == head and b == current and after(item, changed) for h, b, item in markers):
+        problems.append('A trusted Claude %s review of head %s on the current merge base is on the PR. Ask one time for '
+                        'each head.' % (kind, head[:12]))
+    if problems:
+        return False, lines + problems, {}
+    # The review job reviews only this head on this base and merge base. Thus the approval binds the reviewed code.
+    return True, lines + ['The Claude %s review of head %s can start.' % (kind, head[:12])], {
+        'head': head, 'base': base, 'merge_base': current}
+
+
+def request_kind(event):
+    """Return the kind of the exact request text in the comment. GitHub compares the texts with no regard to letter case."""
+    body = ((event.get('comment') or {}).get('body') or '').lower()
+    kinds = [kind for kind, text in CLAUDE_REQUESTS.items() if text.lower() == body]
+    if not kinds:
+        raise GateError('The comment is not a Claude review request.')
+    return kinds[0]
 
 
 def run(check, gh, event, config, template=''):
@@ -633,6 +704,9 @@ def run(check, gh, event, config, template=''):
         gh.post_comment(record_body(label, head, base))
     comments = gh.comments()
     pr = gh.pr()
+    if check == 'claude-review':
+        # The gate job has read permissions only, so it never drops a label.
+        return claude_request(gh, pr, comments, gh.base_changed_at(), request_kind(event))
     if check == 'acceptance':
         files, complete = gh.files()
         passed, lines, drop = acceptance(gh, config, pr, files, complete, template)
@@ -657,8 +731,15 @@ def main(argv=None):
     try:
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
         workspace = Path(os.environ.get('GITHUB_WORKSPACE') or '.')
-        config = load_config(workspace / '.github' / 'gates.json')
-        if 'pull_request' not in event:
+        # The gate job of the Claude review has no checkout, and it reads no project config.
+        config = None if args.check == 'claude-review' else load_config(workspace / '.github' / 'gates.json')
+        if args.check == 'claude-review':
+            issue = event.get('issue') or {}
+            if 'comment' not in event or not issue.get('pull_request'):
+                raise GateError('The claude-review check runs only for an issue_comment event on a PR.')
+            gh = GitHub(event['repository']['full_name'], int(issue['number']), os.environ['GITHUB_TOKEN'])
+            passed, lines, outputs = run(args.check, gh, event, None)
+        elif 'pull_request' not in event:
             if args.check != 'classify':
                 raise GateError('The %s check runs only for a pull_request_target event.' % args.check)
             passed, lines, outputs = True, ['No PR: the project jobs run.'], {'docs_only': 'false', 'code': 'true'}
@@ -679,6 +760,9 @@ def main(argv=None):
         passed, lines = False, [show(error) + ' The gate fails closed.']
     except (KeyError, TypeError, ValueError) as error:
         passed, lines = False, ['The gate got data in an unknown format (%s: %s). The gate fails closed.' % (type(error).__name__, show(error))]
+    if args.check == 'claude-review' and not passed:
+        # The post job of the Claude review posts this reason. An output value has one line.
+        outputs = {'reason': ' '.join(lines).replace('\r', ' ').replace('\n', ' ')}
     if os.environ.get('GITHUB_OUTPUT') and outputs:
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
             for key, value in outputs.items():

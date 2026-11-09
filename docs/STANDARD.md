@@ -1,6 +1,6 @@
 # Project standard
 
-Version: 4
+Version: 5
 
 ## Documents
 
@@ -36,7 +36,7 @@ The label `agent:claude-code` in nookku becomes `agent:claude`. Open branches ke
 | No harness | Codex app | Codex security review | Claude workflow, with a security prompt |
 
 - If the code reviewer is not available, agy does the review. If agy built the change or is not available, the owner does a manual review.
-- Ask one time for each head commit, and at most 3 times for each PR.
+- Ask one time for each head commit, and at most 3 times for each PR. The `gate` job of the Claude workflow stops a second Claude review of one kind for a head, and a Claude review after 3 of one kind.
 - At the cap, stop the requests. Examine the approach, then report to the owner. The owner decides if more reviews are necessary.
 - When a finding shows a class of problem, fix all instances of the class in the same commit.
 - Do not make a commit only for a nit. Close the thread with a reason.
@@ -164,7 +164,7 @@ Stage 2 is the owner approval of the current head and base. The owner reads the 
 - Add the `ready-for-review` label. The gate writes an approval record for the head and base.
 - Approve the PR with the GitHub Approve button. Then run the failed `acceptance` job again, because a review does not start the gates.
 
-The `acceptance` check fails for a fork PR without this approval. No review starts before this.
+The `acceptance` check fails for a fork PR without this approval. No review starts before this. The `gate` job of the Claude workflow uses the same rule, so a Claude review of a fork PR does not start without this approval. The `review` job reviews only the head and base that the `gate` job approved.
 
 - The approval allows one code review, and one security review if the trigger applies.
 - A push removes the label, and an approval of an earlier commit does not count.

@@ -34,6 +34,8 @@ PROMPTS={
     'security':'Do a security review. Report only security defects. Use the Review guidelines in AGENTS.md. Do not end the review with a "Security review:" line.\n\n'+COMMON,
 }
 FAILED='NO VALID CLAUDE REVIEW'
+# The comment when the gate job stops a request. It has no head, so it does not stop an older review of a head as FAILED does.
+STOPPED='The Claude review did not start.'
 # The gates accept only this marker, from the workflow bot. findings is unknown if the model text does not start with a valid count.
 # base is the merge base of the base branch and the head. The diff of the review starts at this commit, and the gates accept
 # the marker only if it is the current merge base. The gates do not accept a v1 marker, because it has no base.
@@ -60,6 +62,14 @@ HEAD=re.compile(r'[0-9a-f]{40}')
 LIMIT=60000
 # The checkout reads the default branch, and a comment on a PR needs both write permissions.
 POST_PERMISSIONS=['contents: read','issues: write','pull-requests: write']
+# The gate job reads the PR, its reviews, comments and events, the compare API and the workflow runs.
+GATE_PERMISSIONS=['actions: read','contents: read','issues: read','pull-requests: read']
+GATE_ACTION='uses: mohanraj00/.github/gates@'
+GATE_OUTPUTS=['head','base','merge_base']
+GATE_BINDS=['GATE_HEAD: ${{ needs.gate.outputs.head }}\n','GATE_BASE: ${{ needs.gate.outputs.base }}\n',
+    'GATE_MERGE_BASE: ${{ needs.gate.outputs.merge_base }}\n','[[ "$GATE_HEAD" =~ ^[0-9a-f]{40}$ && "$GATE_MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]\n',
+    'test "$base" = "$GATE_BASE"\n','test "$(git rev-parse pr/head)" = "$GATE_HEAD"\n',
+    'test "$(cat "$RUNNER_TEMP/output/base.txt")" = "$GATE_MERGE_BASE"\n']
 
 def result_text(raw):
     """Return the review text of a CLI result, or None if the result is not valid."""
@@ -108,6 +118,15 @@ def comment_body(status,head,text,kind=None,run=None,base=None):
     count=findings(text)
     return '<!-- claude-review:v2 kind=%s head=%s base=%s findings=%s run=%s -->\nClaude %s review of head %s. Findings: %s.\n\n%s'%(kind,head,base,count,run,kind,head,count,neutral(text))
 
+def stop_body(reason):
+    """Return the PR comment for a request that the gate job stopped. The reason is the gate text, and neutral() escapes it."""
+    reason=(reason or '').strip() or 'The gate job failed. Read the log of the gate job.'
+    return '%s %s\n\nNo gate reads this comment.'%(STOPPED,neutral(reason))
+
+def permissions(job):
+    block=re.search(r'^    permissions:\n((?:      .*\n)+)',job,re.M)
+    return sorted(x.strip() for x in block.group(1).splitlines() if not x.strip().startswith('#')) if block else []
+
 def read(path):
     try:return Path(path).read_text(encoding='utf-8').strip('\n')
     except (OSError,UnicodeError):return None
@@ -120,13 +139,24 @@ def workflow_errors(text):
     for word in ['anthropics/claude-code-action','Bash','id-token']:
         if word in text:errors.append('must not have '+word)
     jobs=re.split(r'^  post:\n',text,flags=re.M)
-    if len(jobs)!=2 or not re.search(r'^  review:\n',jobs[0],re.M):errors.append('must have the review job and then the post job')
-    elif jobs[0].count('environment:')!=1 or 'environment:' in jobs[1]:errors.append('must have the environment on the review job only')
-    elif 'secrets.' in jobs[1]:errors.append('must not give a secret to the post job')
-    if len(jobs)==2:
-        block=re.search(r'^    permissions:\n((?:      .*\n)+)',jobs[1],re.M)
-        granted=sorted(x.strip() for x in block.group(1).splitlines() if not x.strip().startswith('#')) if block else []
-        if granted!=POST_PERMISSIONS:errors.append('must give the post job exactly '+', '.join(POST_PERMISSIONS))
+    first=re.split(r'^  review:\n',jobs[0],flags=re.M)
+    gate=re.split(r'^  gate:\n',first[0],flags=re.M)
+    if len(jobs)!=2 or len(first)!=2 or len(gate)!=2:errors.append('must have the gate job, the review job and then the post job')
+    else:
+        if 'environment:' in gate[1] or 'secrets.' in gate[1]:errors.append('must not give an environment or a secret to the gate job')
+        if permissions(gate[1])!=GATE_PERMISSIONS:errors.append('must give the gate job exactly '+', '.join(GATE_PERMISSIONS))
+        if GATE_ACTION not in gate[1] or 'check: claude-review\n' not in gate[1]:errors.append('must run the claude-review check of the gates action in the gate job')
+        if not re.search(r'^    needs: gate\n',first[1],re.M):errors.append('must make the review job need the gate job')
+        if not re.search(r'^    needs: \[gate, review\]\n',jobs[1],re.M):errors.append('must make the post job need the gate job and the review job')
+        if first[1].count('environment:')!=1 or 'environment:' in jobs[1]:errors.append('must have the environment on the review job only')
+        if 'secrets.' in jobs[1]:errors.append('must not give a secret to the post job')
+        # The review job must review the head, the base and the merge base that the gate job approved.
+        for need in GATE_OUTPUTS:
+            if '      %s: ${{ steps.gate.outputs.%s }}\n'%(need,need) not in gate[1]:errors.append('must give the gate output '+need)
+        for need in GATE_BINDS:
+            if need not in first[1]:errors.append('must keep '+need.strip()+' in the review job')
+        if permissions(jobs[1])!=POST_PERMISSIONS:errors.append('must give the post job exactly '+', '.join(POST_PERMISSIONS))
+    if not re.search(r'^concurrency:\n  group: .*\n(?:    .*\n)*  cancel-in-progress: false\n',text,re.M):errors.append('must have a concurrency group with cancel-in-progress: false')
     for need in ['claude -p --restricted ','--tools "Read,Grep,Glob"','Read(//proc/**),Grep(//proc/**),Glob(//proc/**)']:
         if need not in text:errors.append('must keep '+need)
     # Each job has its own checkout, so one job cannot satisfy this check for the other job.
@@ -140,7 +170,7 @@ def main(argv=None):
     commands=parser.add_subparsers(dest='command',required=True)
     prompt=commands.add_parser('prompt');prompt.add_argument('kind',choices=sorted(PROMPTS));prompt.add_argument('--diff',required=True)
     check=commands.add_parser('check');check.add_argument('result');check.add_argument('out')
-    comment=commands.add_parser('comment');comment.add_argument('--status',required=True);comment.add_argument('--output-dir',required=True);comment.add_argument('--post',action='store_true');comment.add_argument('--kind',choices=sorted(PROMPTS))
+    comment=commands.add_parser('comment');comment.add_argument('--status',required=True);comment.add_argument('--output-dir',required=True);comment.add_argument('--post',action='store_true');comment.add_argument('--kind',choices=sorted(PROMPTS));comment.add_argument('--gate',default='success')
     a=parser.parse_args(argv)
     if a.command=='prompt':
         print(PROMPTS[a.kind].format(diff=a.diff),end='')
@@ -153,7 +183,9 @@ def main(argv=None):
         Path(a.out).write_text(text,encoding='utf-8')
     else:
         folder=Path(a.output_dir)
-        body=comment_body(a.status,read(folder/'head.txt'),read(folder/'review.txt'),a.kind,os.environ.get('GITHUB_RUN_ID'),read(folder/'base.txt'))
+        # The gate job gives its reason in GATE_REASON when it stops a request.
+        if a.gate!='success':body=stop_body(os.environ.get('GATE_REASON'))
+        else:body=comment_body(a.status,read(folder/'head.txt'),read(folder/'review.txt'),a.kind,os.environ.get('GITHUB_RUN_ID'),read(folder/'base.txt'))
         if a.post:call('POST','/repos/%s/issues/%d/comments'%(os.environ['REPOSITORY'],int(os.environ['PR'])),os.environ['GITHUB_TOKEN'],{'body':body})
         else:print(body)
     return 0
