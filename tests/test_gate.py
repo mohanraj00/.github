@@ -676,6 +676,77 @@ class AcceptanceTest(unittest.TestCase):
         self.assertNotIn('Stage 2', message)
 
 
+def request(kind='code', body=None):
+    """Return the issue_comment event of a Claude review request on the PR."""
+    return {'action': 'created', 'repository': {'full_name': REPO}, 'sender': {'login': 'mohanraj00'},
+            'issue': {'number': 7, 'pull_request': {'url': 'x'}}, 'comment': {'body': body or gate.CLAUDE_REQUESTS[kind]}}
+
+
+def marker(head=HEAD, kind='code', base=BASE):
+    return comment(gate.BOT, review_body('success', head, 'Findings: 0', kind, base=base))
+
+
+class ClaudeRequestTest(unittest.TestCase):
+    def test_a_same_repo_pr_runs(self):
+        passed, message, _ = check('claude-review', Fake(), request())
+        self.assertTrue(passed, message)
+        self.assertIn('The Claude code review of head %s can start.' % HEAD[:12], message)
+        self.assertNotIn('Stage 2', message)
+
+    def test_a_fork_pr_without_an_approval_stops(self):
+        for fake in (Fake(fork=True), Fake(fork=True, reviews=[approval(OLD)]),
+                     Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review', head=OLD)])):
+            with self.subTest(reviews=fake.review_list, labels=fake.state['labels']):
+                passed, message, _ = check('claude-review', fake, request())
+                self.assertFalse(passed)
+                self.assertIn('This PR comes from the fork someone/project.', message)
+                self.assertIn('Stage 2 needs an owner approval of head %s on base main before a review.' % HEAD[:12], message)
+                self.assertEqual(fake.removed, [])  # The gate job has read permissions only.
+
+    def test_a_fork_pr_with_an_approval_runs(self):
+        for fake in (Fake(fork=True, reviews=APPROVED),
+                     Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review')])):
+            with self.subTest(reviews=fake.review_list, labels=fake.state['labels']):
+                passed, message, _ = check('claude-review', fake, request('security'))
+                self.assertTrue(passed, message)
+                self.assertIn('The Claude security review of head', message)
+
+    def test_the_stage2_rule_is_the_rule_of_acceptance(self):
+        for fake in (lambda: Fake(fork=True), lambda: Fake(fork=True, reviews=APPROVED),
+                     lambda: Fake(fork=True, reviews=[approval(at='2026-11-07T09:00:00Z')], base_changed='2026-11-07T10:00:00Z'),
+                     lambda: Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review')])):
+            with self.subTest():
+                self.assertEqual(check('claude-review', fake(), request())[0], check('acceptance', fake())[0])
+
+    def test_a_second_request_for_one_head_stops(self):
+        passed, message, _ = check('claude-review', Fake(comments=[marker()]), request())
+        self.assertFalse(passed)
+        self.assertIn('A trusted Claude code review of head %s on the current merge base is on the PR.' % HEAD[:12], message)
+        # A review of a different kind, head or merge base, or a marker that the gates do not trust, does not stop the request.
+        for fake in (Fake(comments=[marker(kind='security')]), Fake(comments=[marker(OLD)]),
+                     Fake(comments=[marker(base='d' * 40)]), Fake(comments=[marker()], runs={}),
+                     Fake(comments=[marker()], base_changed='2026-11-07T11:00:00Z'),
+                     Fake(comments=[comment(gate.BOT, review_body('failure', HEAD, '', 'code'))]),
+                     Fake(comments=[comment('writer-user', review_body('success', HEAD, 'Findings: 0', 'code'))])):
+            with self.subTest(comments=fake.comment_list, runs=fake.runs):
+                passed, message, _ = check('claude-review', fake, request())
+                self.assertTrue(passed, message)
+
+    def test_a_4th_request_stops(self):
+        two = [marker(OLD), marker('d' * 40)]
+        self.assertTrue(check('claude-review', Fake(comments=two), request())[0])
+        passed, message, _ = check('claude-review', Fake(comments=two + [marker('e' * 40, base='f' * 40)]), request())
+        self.assertFalse(passed)
+        self.assertIn('The PR has 3 trusted Claude code reviews. The cap is 3 for each PR.', message)
+        # The cap is for each kind.
+        self.assertTrue(check('claude-review', Fake(comments=two + [marker('e' * 40)]), request('security'))[0])
+
+    def test_the_request_text_selects_the_kind(self):
+        self.assertIn('security review', check('claude-review', Fake(), request(body=gate.CLAUDE_REQUESTS['security'].upper()))[1])
+        with self.assertRaises(gate.GateError):
+            check('claude-review', Fake(), request(body='@claude review this PR.'))
+
+
 class MainTest(unittest.TestCase):
     def main(self, check_name, error=None, files=None, ev=None):
         with tempfile.TemporaryDirectory() as folder:
@@ -708,6 +779,24 @@ class MainTest(unittest.TestCase):
         status, out, _ = self.main('security-review', files=['src/a\n::warning::x.py'])
         self.assertEqual(status, 1)
         self.assertNotIn('\n::warning', out)
+
+    def test_a_stopped_claude_request_writes_the_reason(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, 'event.json').write_text(json.dumps(request()))
+            env = {'GITHUB_EVENT_PATH': str(Path(folder, 'event.json')), 'GITHUB_WORKSPACE': folder, 'GITHUB_TOKEN': 'sample',
+                   'GITHUB_OUTPUT': str(Path(folder, 'out'))}
+            out = io.StringIO()
+            # The folder has no .github/gates.json: the gate job has no checkout.
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out), mock.patch.object(gate, 'GitHub') as api:
+                api.return_value = Fake(fork=True)
+                status = gate.main(['claude-review'])
+            api.assert_called_once_with(REPO, 7, 'sample')
+            output = Path(folder, 'out').read_text()
+        self.assertEqual(status, 1)
+        self.assertIn('::error title=claude-review::Stage 2 needs an owner approval', out.getvalue())
+        self.assertTrue(output.startswith('reason=This PR comes from the fork someone/project. Stage 2 needs'))
+        self.assertEqual(output.count('\n'), 1)
+        self.assertEqual(self.main('claude-review')[0], 1)  # A pull_request_target event is not a request.
 
     def test_classify_writes_the_outputs(self):
         self.assertEqual(self.main('classify', files=['README.md'])[2], 'docs_only=true\ncode=false\n')

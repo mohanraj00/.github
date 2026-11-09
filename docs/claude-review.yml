@@ -8,13 +8,45 @@ on:
   issue_comment:
     types: [created]
 permissions: {}
+# The requests on one PR run one at a time, so the gate job of a request reads the marker of the request before it.
+# A new pending request replaces an older pending request. Then the older request does not run, and it posts no comment.
+# Other comments get their own group, so they cannot replace a pending request.
+concurrency:
+  group: >-
+    claude-review-${{ github.event.issue.number }}-${{
+    github.event.issue.pull_request &&
+    (github.event.comment.body == '@claude review this PR. Use the Review guidelines in AGENTS.md.' ||
+    github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.') &&
+    contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+    'request' || github.run_id }}
+  cancel-in-progress: false
 jobs:
-  review:
+  # The gate job has no environment and no secret. For a fork PR, it needs the stage 2 owner approval of the current head
+  # and base, with the same code as the acceptance gate. It stops a second review of one kind for a head and merge base,
+  # and a review after the cap of 3 for each kind. The project uses the SHA of the gates action that its gates use.
+  gate:
     if: >-
       github.event.issue.pull_request &&
       (github.event.comment.body == '@claude review this PR. Use the Review guidelines in AGENTS.md.' ||
       github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # The gate reads the workflow runs of the markers.
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - id: gate
+        uses: mohanraj00/.github/gates@0000000000000000000000000000000000000000 # Replace with the SHA of the gates action of the project.
+        with:
+          check: claude-review
+  review:
+    needs: gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: claude-review
@@ -81,9 +113,10 @@ jobs:
           path: ${{ runner.temp }}/output
           if-no-files-found: ignore
           retention-days: 7
+  # If the gate job stops the request, the post job posts the reason of the gate job.
   post:
-    needs: review
-    if: ${{ always() && needs.review.result != 'skipped' }}
+    needs: [gate, review]
+    if: ${{ always() && needs.gate.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -109,5 +142,7 @@ jobs:
           PR: ${{ github.event.issue.number }}
           REPOSITORY: ${{ github.repository }}
           REVIEW_RESULT: ${{ needs.review.result }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          GATE_REASON: ${{ needs.gate.outputs.reason }}
           KIND: ${{ github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.' && 'security' || 'code' }}
-        run: python3 -B tools/claude_review.py comment --status "$REVIEW_RESULT" --kind "$KIND" --output-dir "$RUNNER_TEMP/output" --post
+        run: python3 -B tools/claude_review.py comment --status "$REVIEW_RESULT" --kind "$KIND" --gate "$GATE_RESULT" --output-dir "$RUNNER_TEMP/output" --post

@@ -1,8 +1,8 @@
 name: Project gates
-description: The shared cross-review, security-review and acceptance gates of the project standard, and the classify step of ci-ok.
+description: The shared cross-review, security-review and acceptance gates of the project standard, the classify step of ci-ok, and the gate job of the Claude review.
 inputs:
   check:
-    description: One of cross-review, security-review, acceptance or classify.
+    description: One of cross-review, security-review, acceptance, classify or claude-review.
     required: true
   token:
     description: The token for the GitHub API. The caller gives the job permissions.
@@ -15,6 +15,9 @@ outputs:
   docs_only:
     description: For classify only. true for a docs-only change.
     value: ${{ steps.gate.outputs.docs_only }}
+  reason:
+    description: For claude-review only. The reason when the check stops the request.
+    value: ${{ steps.gate.outputs.reason }}
 runs:
   using: composite
   steps:
