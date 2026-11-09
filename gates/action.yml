@@ -18,6 +18,15 @@ outputs:
   reason:
     description: For claude-review only. The reason when the check stops the request.
     value: ${{ steps.gate.outputs.reason }}
+  head:
+    description: For claude-review only. The head SHA that the check approved for the review.
+    value: ${{ steps.gate.outputs.head }}
+  base:
+    description: For claude-review only. The base branch that the check approved for the review.
+    value: ${{ steps.gate.outputs.base }}
+  merge_base:
+    description: For claude-review only. The merge base of the head and the base when the check ran.
+    value: ${{ steps.gate.outputs.merge_base }}
 runs:
   using: composite
   steps:

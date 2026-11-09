@@ -693,6 +693,17 @@ class ClaudeRequestTest(unittest.TestCase):
         self.assertIn('The Claude code review of head %s can start.' % HEAD[:12], message)
         self.assertNotIn('Stage 2', message)
 
+    def test_a_passed_request_names_the_approved_head_and_base(self):
+        # The review job compares its fetched head, base and merge base with these outputs.
+        self.assertEqual(check('claude-review', Fake(), request())[2], {'head': HEAD, 'base': 'main', 'merge_base': BASE})
+        self.assertEqual(check('claude-review', Fake(fork=True), request())[2], {})
+
+    def test_a_request_without_a_merge_base_stops(self):
+        passed, message, outputs = check('claude-review', Fake(merge_base=None), request())
+        self.assertFalse(passed)
+        self.assertIn('The gate cannot get the merge base of head %s and base main.' % HEAD[:12], message)
+        self.assertEqual(outputs, {})
+
     def test_a_fork_pr_without_an_approval_stops(self):
         for fake in (Fake(fork=True), Fake(fork=True, reviews=[approval(OLD)]),
                      Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review', head=OLD)])):
@@ -797,6 +808,18 @@ class MainTest(unittest.TestCase):
         self.assertTrue(output.startswith('reason=This PR comes from the fork someone/project. Stage 2 needs'))
         self.assertEqual(output.count('\n'), 1)
         self.assertEqual(self.main('claude-review')[0], 1)  # A pull_request_target event is not a request.
+
+    def test_a_passed_claude_request_writes_the_head_and_base(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, 'event.json').write_text(json.dumps(request()))
+            env = {'GITHUB_EVENT_PATH': str(Path(folder, 'event.json')), 'GITHUB_WORKSPACE': folder, 'GITHUB_TOKEN': 'sample',
+                   'GITHUB_OUTPUT': str(Path(folder, 'out'))}
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()), mock.patch.object(gate, 'GitHub') as api:
+                api.return_value = Fake()
+                status = gate.main(['claude-review'])
+            output = Path(folder, 'out').read_text()
+        self.assertEqual(status, 0)
+        self.assertEqual(output, 'head=%s\nbase=main\nmerge_base=%s\n' % (HEAD, BASE))
 
     def test_classify_writes_the_outputs(self):
         self.assertEqual(self.main('classify', files=['README.md'])[2], 'docs_only=true\ncode=false\n')

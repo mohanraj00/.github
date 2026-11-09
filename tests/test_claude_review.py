@@ -281,7 +281,14 @@ class WorkflowTest(unittest.TestCase):
                 ('      issues: read\n', '      issues: write\n'),
                 ('          check: claude-review\n', '          check: acceptance\n'),
                 ('  cancel-in-progress: false\n', '  cancel-in-progress: true\n'),
-                ('concurrency:\n', 'x-concurrency:\n')):
+                ('concurrency:\n', 'x-concurrency:\n'),
+                ('      head: ${{ steps.gate.outputs.head }}\n', ''),
+                ('      merge_base: ${{ steps.gate.outputs.merge_base }}\n', ''),
+                ('          GATE_BASE: ${{ needs.gate.outputs.base }}\n', '          GATE_BASE: main\n'),
+                ('          test "$(git rev-parse pr/head)" = "$GATE_HEAD"\n', ''),
+                ('          test "$base" = "$GATE_BASE"\n', ''),
+                ('          test "$(cat "$RUNNER_TEMP/output/base.txt")" = "$GATE_MERGE_BASE"\n', ''),
+                ('[[ "$GATE_HEAD" =~ ^[0-9a-f]{40}$ && ', '[[ ')):
             with self.subTest(old=old, new=new):
                 self.assertIn(old, WORKFLOW)
                 self.assertNotEqual(claude_review.workflow_errors(WORKFLOW.replace(old, new)), [])

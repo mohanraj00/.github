@@ -164,7 +164,7 @@ Stage 2 is the owner approval of the current head and base. The owner reads the 
 - Add the `ready-for-review` label. The gate writes an approval record for the head and base.
 - Approve the PR with the GitHub Approve button. Then run the failed `acceptance` job again, because a review does not start the gates.
 
-The `acceptance` check fails for a fork PR without this approval. No review starts before this. The `gate` job of the Claude workflow uses the same rule, so a Claude review of a fork PR does not start without this approval.
+The `acceptance` check fails for a fork PR without this approval. No review starts before this. The `gate` job of the Claude workflow uses the same rule, so a Claude review of a fork PR does not start without this approval. The `review` job reviews only the head and base that the `gate` job approved.
 
 - The approval allows one code review, and one security review if the trigger applies.
 - A push removes the label, and an approval of an earlier commit does not count.

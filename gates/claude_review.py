@@ -65,6 +65,11 @@ POST_PERMISSIONS=['contents: read','issues: write','pull-requests: write']
 # The gate job reads the PR, its reviews, comments and events, the compare API and the workflow runs.
 GATE_PERMISSIONS=['actions: read','contents: read','issues: read','pull-requests: read']
 GATE_ACTION='uses: mohanraj00/.github/gates@'
+GATE_OUTPUTS=['head','base','merge_base']
+GATE_BINDS=['GATE_HEAD: ${{ needs.gate.outputs.head }}\n','GATE_BASE: ${{ needs.gate.outputs.base }}\n',
+    'GATE_MERGE_BASE: ${{ needs.gate.outputs.merge_base }}\n','[[ "$GATE_HEAD" =~ ^[0-9a-f]{40}$ && "$GATE_MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]\n',
+    'test "$base" = "$GATE_BASE"\n','test "$(git rev-parse pr/head)" = "$GATE_HEAD"\n',
+    'test "$(cat "$RUNNER_TEMP/output/base.txt")" = "$GATE_MERGE_BASE"\n']
 
 def result_text(raw):
     """Return the review text of a CLI result, or None if the result is not valid."""
@@ -145,6 +150,11 @@ def workflow_errors(text):
         if not re.search(r'^    needs: \[gate, review\]\n',jobs[1],re.M):errors.append('must make the post job need the gate job and the review job')
         if first[1].count('environment:')!=1 or 'environment:' in jobs[1]:errors.append('must have the environment on the review job only')
         if 'secrets.' in jobs[1]:errors.append('must not give a secret to the post job')
+        # The review job must review the head, the base and the merge base that the gate job approved.
+        for need in GATE_OUTPUTS:
+            if '      %s: ${{ steps.gate.outputs.%s }}\n'%(need,need) not in gate[1]:errors.append('must give the gate output '+need)
+        for need in GATE_BINDS:
+            if need not in first[1]:errors.append('must keep '+need.strip()+' in the review job')
         if permissions(jobs[1])!=POST_PERMISSIONS:errors.append('must give the post job exactly '+', '.join(POST_PERMISSIONS))
     if not re.search(r'^concurrency:\n  group: .*\n(?:    .*\n)*  cancel-in-progress: false\n',text,re.M):errors.append('must have a concurrency group with cancel-in-progress: false')
     for need in ['claude -p --restricted ','--tools "Read,Grep,Glob"','Read(//proc/**),Grep(//proc/**),Glob(//proc/**)']:

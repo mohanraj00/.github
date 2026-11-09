@@ -40,6 +40,9 @@ jobs:
       pull-requests: read
     outputs:
       reason: ${{ steps.gate.outputs.reason }}
+      head: ${{ steps.gate.outputs.head }}
+      base: ${{ steps.gate.outputs.base }}
+      merge_base: ${{ steps.gate.outputs.merge_base }}
     steps:
       - id: gate
         uses: mohanraj00/.github/gates@0000000000000000000000000000000000000000 # Replace with the SHA of the gates action of the project.
@@ -64,19 +67,28 @@ jobs:
       # The diff starts at the base branch of the PR, so a PR to a branch other than the default branch gets the correct diff.
       # base.txt holds the merge base that the diff uses. The marker names it, and the gates accept the marker only for the
       # current merge base. Thus a base change during or after the review stops the marker. A review needs one merge base.
+      # The review uses only the head, the base and the merge base that the gate job approved. If a push or a base change
+      # occurs after the gate job, for example while the environment waits for approval, the step fails. Then ask again.
       - name: Write the PR diff
         env:
           PR: ${{ github.event.issue.number }}
           REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          GATE_HEAD: ${{ needs.gate.outputs.head }}
+          GATE_BASE: ${{ needs.gate.outputs.base }}
+          GATE_MERGE_BASE: ${{ needs.gate.outputs.merge_base }}
         run: |
           mkdir "$RUNNER_TEMP/input" "$RUNNER_TEMP/output"
+          [[ "$GATE_HEAD" =~ ^[0-9a-f]{40}$ && "$GATE_MERGE_BASE" =~ ^[0-9a-f]{40}$ ]]
           base="$(gh api "repos/${REPOSITORY}/pulls/${PR}" --jq .base.ref)"
+          test "$base" = "$GATE_BASE"
           git check-ref-format --branch "$base" > /dev/null
           git fetch --no-tags origin "+refs/heads/${base}:refs/remotes/pr/base" "+refs/pull/${PR}/head:refs/remotes/pr/head"
+          test "$(git rev-parse pr/head)" = "$GATE_HEAD"
           git rev-parse pr/head > "$RUNNER_TEMP/output/head.txt"
           git merge-base --all pr/base pr/head > "$RUNNER_TEMP/output/base.txt"
           test "$(wc -l < "$RUNNER_TEMP/output/base.txt")" -eq 1
+          test "$(cat "$RUNNER_TEMP/output/base.txt")" = "$GATE_MERGE_BASE"
           git diff --no-ext-diff --no-textconv -U20 pr/base...pr/head > "$RUNNER_TEMP/input/pr.diff"
           test -s "$RUNNER_TEMP/input/pr.diff"
       - name: Write the fixed prompt

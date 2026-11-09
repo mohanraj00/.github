@@ -665,14 +665,17 @@ def claude_request(gh, pr, comments, changed, kind):
     if len(markers) >= CLAUDE_CAP:
         problems.append('The PR has %d trusted Claude %s reviews. The cap is %d for each PR. Examine the approach, then '
                         'report to the owner.' % (len(markers), kind, CLAUDE_CAP))
-    if markers:
-        current = gh.merge_base(base, head)
-        if any(h == head and b == current and after(item, changed) for h, b, item in markers):
-            problems.append('A trusted Claude %s review of head %s on the current merge base is on the PR. Ask one time for '
-                            'each head.' % (kind, head[:12]))
+    current = gh.merge_base(base, head)
+    if not current:
+        problems.append('The gate cannot get the merge base of head %s and base %s.' % (head[:12], show(base)))
+    elif any(h == head and b == current and after(item, changed) for h, b, item in markers):
+        problems.append('A trusted Claude %s review of head %s on the current merge base is on the PR. Ask one time for '
+                        'each head.' % (kind, head[:12]))
     if problems:
-        return False, lines + problems, []
-    return True, lines + ['The Claude %s review of head %s can start.' % (kind, head[:12])], []
+        return False, lines + problems, {}
+    # The review job reviews only this head on this base and merge base. Thus the approval binds the reviewed code.
+    return True, lines + ['The Claude %s review of head %s can start.' % (kind, head[:12])], {
+        'head': head, 'base': base, 'merge_base': current}
 
 
 def request_kind(event):
@@ -702,8 +705,9 @@ def run(check, gh, event, config, template=''):
     comments = gh.comments()
     pr = gh.pr()
     if check == 'claude-review':
-        passed, lines, drop = claude_request(gh, pr, comments, gh.base_changed_at(), request_kind(event))
-    elif check == 'acceptance':
+        # The gate job has read permissions only, so it never drops a label.
+        return claude_request(gh, pr, comments, gh.base_changed_at(), request_kind(event))
+    if check == 'acceptance':
         files, complete = gh.files()
         passed, lines, drop = acceptance(gh, config, pr, files, complete, template)
     else:
