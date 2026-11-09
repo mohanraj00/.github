@@ -81,6 +81,14 @@ If the base of a PR changes while a Claude review runs, the run does not stop. I
 
 The `gate` job and the concurrency group limit the Claude runs for each PR. A user with write access can still post requests on many PRs in a short time. Each run uses the OAuth token for up to 30 minutes. The threat model excludes that actor, so the gates do not limit the runs across PRs.
 
+#### Some pin lines unchanged in the copy check (#22, P2)
+
+If a PR changes only some of the pin lines in `gates.yml`, the copy check uses the SHA of the changed lines as the new pin. The unchanged lines keep the old SHA, so some gates run at the old SHA after the merge. The next copy check then finds two pins on the base branch, and it fails closed. The stop rule does not fix this now, because its severity is P2. The PR is level 1, so the owner reads the pin lines before the merge.
+
+#### Pin to an older commit of main (#22, P3)
+
+The copy check accepts each new pin that is on `main` of this repository, also a commit before the old pin. Thus a PR can move a project to an older release of the gates with no security review. The stop rule does not fix this now, because its severity is P3. The PR is level 1, so the owner decides each pin change before the merge.
+
 ## Constitution template
 
 Each project constitution uses the sections and the exact governance block in [`docs/constitution-template.md`](docs/constitution-template.md). The block has version markers, so a check can compare it with the template.
