@@ -52,7 +52,14 @@ GitHub Actions has no event for a resolved review thread. If you resolve the las
 
 The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed` and `ready-for-review` depend on the rule that agents never add them.
 
-The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. If the first line of a Claude review gives `Findings: 0` and a later line starts with a severity tag or a `path:line` reference, the marker gives `findings=unknown`. This check blocks only a count that does not agree with the text. It does not block a model that omits a finding.
+The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The marker gives `findings=unknown` if the text of a Claude review does not agree with the count on its first line:
+
+- `INCOMPLETE REVIEW` is on a line below the first line.
+- A later `Findings: N` line gives a different count.
+- The count is 0, and a later line starts with a severity tag or a `path:line` reference.
+- The count is 0, and a severity tag P0 to P3 is at any position in a later line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
+
+The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. A prompt injection in the diff can cause these two results.
 
 ## Constitution template
 

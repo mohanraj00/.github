@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import unicodedata
 import urllib.request
 
 API='https://api.github.com'
@@ -46,6 +47,12 @@ COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
 # The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
 FINDING=re.compile(r'^[ \t]*(?:(?:[-*+]|#{1,6}|\d{1,3}[.)])[ \t]+)?(?:\*\*|\[|`)*[ \t]*'
                    r'(?:P[0-3]\b|(?:[\w.-]+/)*[\w.-]*\w\.\w+:\d+|(?:[\w.-]+/)+[\w.-]+:\d+)',re.M)
+# These signals make the result unknown for each count. The model can write INCOMPLETE REVIEW on any line.
+# A second count line with a different number does not agree with the first line.
+INCOMPLETE=re.compile(r'incomplete\W*review',re.I)
+RECOUNT=re.compile(r'^[^\w\n]*findings?[^\w\n]*[:=][^\w\n]*(\d+)',re.I|re.M)
+# For a count of 0, a severity tag P0 to P3 at any position in a line is also a finding.
+TAG=re.compile(r'(?<![\w.])P[0-3](?![\w.])')
 # The exact request texts. The workflow compares the comment body with these texts.
 REQUESTS={'code':'@claude review this PR. Use the Review guidelines in AGENTS.md.',
     'security':'@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.'}
@@ -70,14 +77,23 @@ def neutral(text):
     if len(text)>LIMIT:text=text[:LIMIT]+'\n\nThe workflow cut this review at %d characters.'%LIMIT
     return text
 
+def signal_text(text):
+    """Return the text in NFKC form with no format characters, so that a full-width or a zero-width character cannot hide a signal."""
+    return ''.join(c for c in unicodedata.normalize('NFKC',text) if unicodedata.category(c)!='Cf')
+
 def findings(text):
     """Return the count from the first line of the model text, or unknown.
-    A count of 0 with a finding line below it does not agree with the text, so the result is unknown."""
+    The result is unknown if the text does not agree with the count: INCOMPLETE REVIEW on a line, a second count line
+    with a different number, or, for a count of 0, a finding line or a severity tag below the first line."""
     first,_,rest=text.strip().partition('\n')
     found=COUNT.fullmatch(first.strip())
     if not found:return 'unknown'
-    if found.group(1)=='0' and FINDING.search(rest):return 'unknown'
-    return found.group(1)
+    count=found.group(1)
+    rest=signal_text(rest)
+    if INCOMPLETE.search(rest):return 'unknown'
+    if any(int(n)!=int(count) for n in RECOUNT.findall(rest)):return 'unknown'
+    if count=='0' and (FINDING.search(rest) or TAG.search(rest)):return 'unknown'
+    return count
 
 def comment_body(status,head,text,kind=None,run=None,base=None):
     """Return the PR comment. A review that is not valid gives only the fixed failure text and the head.

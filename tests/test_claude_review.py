@@ -93,7 +93,19 @@ class CommentTest(unittest.TestCase):
                             ('Findings: 0\n- **P2** a defect.', 'unknown'),
                             ('Findings: 0\n[P0] a defect.', 'unknown'),
                             ('Findings: 0\n`gates/gate.py:12`: a defect.', 'unknown'),
-                            ('Findings: 0\nP10 is not a severity tag.', '0')):
+                            ('Findings: 0\nP10 is not a severity tag.', '0'),
+                            ('Findings: 0\nINCOMPLETE REVIEW\nThe diff was too long.', 'unknown'),
+                            ('Findings: 0\nNo defect.\n\nIncomplete review: I read only half of the diff.', 'unknown'),
+                            ('Findings: 2\n\n1. P1 src/a.py:3: A.\n2. P2 src/b.py:4: B.\nINCOMPLETE REVIEW', 'unknown'),
+                            ('Findings: 0\nＩＮＣＯＭＰＬＥＴＥ ＲＥＶＩＥＷ', 'unknown'),
+                            ('Findings: 0\nINCOM\u200bPLETE REVIEW', 'unknown'),
+                            ('Findings: 0\nNo defect.\nFindings: 1', 'unknown'),
+                            ('Findings: 0\n**Findings**: 3', 'unknown'),
+                            ('Findings: 2\n\n1. P1 src/a.py:3: A.\n2. P2 src/b.py:4: B.\nFindings: 0', 'unknown'),
+                            ('Findings: 0\nNo defect.\nFindings: 0', '0'),
+                            ('Findings: 0\nThe input is not checked (P1).', 'unknown'),
+                            ('Findings: 0\nThe check in the gate is complete.', '0'),
+                            ('Findings: 0\nThe change in gates/gate.py is correct, and the review is complete.', '0')):
             with self.subTest(text=text):
                 self.assertEqual(claude_review.findings(text), count)
                 for kind in ('code', 'security'):
