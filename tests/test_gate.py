@@ -544,6 +544,17 @@ class CrossReviewTest(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn('2 unresolved threads', message)
 
+    def test_a_null_findings_value_reads_the_threads(self):
+        # Seen on aavanam#57: a clean Codex review gave has_any_findings null.
+        fake = Fake(comments=[comment(gate.CODEX, state(findings=None))], threads=0)
+        passed, message, _ = check('cross-review', fake)
+        self.assertTrue(passed)
+        self.assertIn('gives no findings value, and no Codex thread is open', message)
+        fake = Fake(comments=[comment(gate.CODEX, state(findings=None))], threads=1)
+        passed, message, _ = check('cross-review', fake)
+        self.assertFalse(passed)
+        self.assertIn('1 unresolved threads', message)
+
     def test_a_changed_state_format_fails_closed(self):
         for body in ('<!-- codex-review-state:v1 {broken} -->', '<!-- codex-review-state:v1 {"code": {}} -->',
                      '<!-- codex-review-state:v1 {"code_review": {"commit_sha": 5, "status": "completed"}} -->',
