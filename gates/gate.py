@@ -483,15 +483,16 @@ def cross_review(gh, pr, comments, changed):
         review, errors = codex_code(comments, changed)
         lines += errors
         if review and review['commit_sha'] == head and review['status'] == 'completed':
-            if review['has_any_findings'] is False:
+            found = review.get('has_any_findings')
+            if found is False:
                 return True, lines + ['The Codex code review of head %s found no issues.' % head[:12]], drop
-            if review['has_any_findings'] is True:
-                left = gh.open_codex_threads()
-                if not left:
+            # A null findings value gets the same thread rule as true, so an open Codex thread always fails.
+            left = gh.open_codex_threads()
+            if not left:
+                if found is True:
                     return True, lines + ['The Codex code review of head %s has findings, and each Codex thread is resolved.' % head[:12]], drop
-                lines.append('The Codex code review of head %s has %d unresolved threads. Fix each finding, or write the reason and resolve the thread.' % (head[:12], left))
-            else:
-                lines.append('The Codex code review of head %s gives no findings value.' % head[:12])
+                return True, lines + ['The Codex code review of head %s gives no findings value, and no Codex thread is open.' % head[:12]], drop
+            lines.append('The Codex code review of head %s has %d unresolved threads. Fix each finding, or write the reason and resolve the thread.' % (head[:12], left))
         else:
             lines.append('No completed Codex code review of head %s. Post "@codex review" with "Head: %s" on the next line.' % (head[:12], head[:7]))
     elif builder in ('codex', 'agy'):
