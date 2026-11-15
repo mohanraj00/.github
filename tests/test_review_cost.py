@@ -50,7 +50,9 @@ class LineTest(unittest.TestCase):
         code, out, summary = self.run_main(['README.md'])
         self.assertEqual(code, 0)
         self.assertIn('::notice title=review-cost::review-cost v1 codex=0 security=1 claude=0 hours=1.0\n', out)
-        self.assertEqual(summary, 'review-cost v1 codex=0 security=1 claude=0 hours=1.0\n')
+        # The security-review check also writes its own summary line, so check only the review cost line.
+        self.assertEqual([x for x in summary.splitlines() if x.startswith('review-cost')],
+                         ['review-cost v1 codex=0 security=1 claude=0 hours=1.0'])
 
     def test_a_failed_gate_writes_no_line(self):
         code, out, summary = self.run_main(['src/a.py'])
