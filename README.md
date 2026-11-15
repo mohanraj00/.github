@@ -99,6 +99,10 @@ A request comment does not start the gates, and `gates-rerun` runs only a failed
 
 The bump check does not prove that the new SHA is a release of the named action. GitHub also shows a commit of a fork under the name of the parent repository. Only an actor with write access can push to a Dependabot branch, and the threat model excludes that actor. The PR is level 1, so the owner reads each SHA and its release before the merge.
 
+#### Base of an action bump (#28)
+
+The bump check and the copy check read the old file at the tip of the base branch, not at the merge base. If a different PR changes a workflow on the base branch after Dependabot opens its PR, the bump check fails. The gate then needs a security review. This failure is safe. To prove the bump again, comment `@dependabot rebase` on the PR.
+
 ## Constitution template
 
 Each project constitution uses the sections and the exact governance block in [`docs/constitution-template.md`](docs/constitution-template.md). The block has version markers, so a check can compare it with the template.
