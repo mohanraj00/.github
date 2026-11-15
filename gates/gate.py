@@ -36,6 +36,10 @@ CLAUDE_CAP = 3
 CODEX_CAP = 3
 CODEX_REQUEST = re.compile(r'\s*@codex review\s*(?:\n|$)', re.I)
 CAP_LABEL = 'review-cap-lifted'
+SECURITY_REQUEST = re.compile(r'\s*@codex security review\s*$', re.I)
+# The title of the notice that holds the review cost line. tools/review_cost.py reads this notice.
+COST = 'review-cost'
+COST_CHECKS = ['cross-review', 'security-review', 'acceptance']
 
 # The Codex GitHub integration posts as this app. A user cannot post as an app.
 CODEX = 'chatgpt-codex-connector[bot]'
@@ -490,6 +494,24 @@ def codex_requests(gh, comments):
                and admins.get((item.get('user') or {}).get('login') or ''))
 
 
+def review_cost(gh, pr, comments):
+    """Return the review cost line of the PR. Each count holds only the request comments of a user with the admin role,
+    as the cap does. The hours go from the PR open time to this gate run."""
+    admins = {}
+
+    def count(test):
+        found = [item for item in comments if test((item.get('body') or '').strip())]
+        for item in found:
+            login = (item.get('user') or {}).get('login') or ''
+            if login and login not in admins:
+                admins[login] = gh.is_admin(login)
+        return sum(1 for item in found if admins.get((item.get('user') or {}).get('login') or ''))
+    texts = {x.lower() for x in CLAUDE_REQUESTS.values()}
+    hours = (gh.now() - stamp(pr['created_at'])).total_seconds() / 3600
+    return '%s v1 codex=%d security=%d claude=%d hours=%.1f' % (
+        COST, codex_requests(gh, comments), count(SECURITY_REQUEST.match), count(lambda x: x.lower() in texts), hours)
+
+
 def cross_review(gh, pr, comments, changed):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
@@ -915,6 +937,17 @@ def main(argv=None):
                     raise GateError('Cannot read the PR template on the base branch: %s' % error)
             gh = GitHub(event['repository']['full_name'], int(event['pull_request']['number']), os.environ['GITHUB_TOKEN'])
             passed, lines, outputs = run(args.check, gh, event, config, template)
+            if passed and args.check in COST_CHECKS:
+                # The cost line is a record only. A failure to make it does not change the result of the gate.
+                try:
+                    cost = review_cost(gh, gh.pr(), gh.comments())
+                except (OSError, GateError, KeyError, TypeError, ValueError) as error:
+                    print('::warning title=%s::No review cost line (%s: %s).' % (COST, type(error).__name__, show(error)))
+                else:
+                    print('::notice title=%s::%s' % (COST, cost))
+                    if os.environ.get('GITHUB_STEP_SUMMARY'):
+                        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+                            out.write(cost + '\n')
     except urllib.error.HTTPError as error:
         passed, lines = False, ['The GitHub API gave HTTP %d for %s. The gate fails closed.' % (error.code, show(error.url))]
     except (urllib.error.URLError, OSError) as error:

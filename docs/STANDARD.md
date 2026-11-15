@@ -65,6 +65,7 @@ The gates are the files of `mohanraj00/.github` and their copies in each project
 - Fix a finding in the gates now if an actor of the threat model can reach it, and its severity is P0 or P1.
 - Otherwise, add it to "Known limits" in `README.md` of `mohanraj00/.github`, close the finding with a reason, and do not change code.
 - Collect the other fixes of the gates in one release each month. A project repins one time for each release.
+- On the day of each monthly gates release, run `python3 tools/review_cost.py <owner/name> <first day> <last day>` from `mohanraj00/.github` for each project. Use the dates of the month before the release, and post the tables on the release PR. The script reads the `review-cost` line that each passed gate writes. A PR that ran an older gates SHA has no line.
 - A reviewer disagreement about the threat model goes to the owner.
 
 The review guidelines in `AGENTS.md` are short. They state what a failure looks like in the project, the paths to skip and the limit for nits. If a finding occurs again, add a check, a test or a line in these guidelines.

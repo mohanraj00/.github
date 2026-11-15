@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "code": ["gates/*", "tests/*", "docs/*.yml", "Makefile"],
+  "code": ["gates/*", "tests/*", "tools/*", "docs/*.yml", "Makefile"],
   "security_sources": [],
   "not_security": [],
   "boundaries": ["gates/*", "docs/*.yml"],
