@@ -38,8 +38,12 @@ jobs:
           tar --extract --gzip --file "$RUNNER_TEMP/actionlint/actionlint.tgz" --directory "$RUNNER_TEMP/actionlint" actionlint
           echo "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
       # actionlint reads gates/action.yml through the local uses: ./gates step of gates.yml.
+      # docs/dependabot.yml is not a workflow, so actionlint does not read it. tests/test_templates.py checks it.
       - name: Parse each workflow and template
-        run: actionlint .github/workflows/*.yml docs/*.yml
+        run: |
+          files=(.github/workflows/*.yml)
+          for f in docs/*.yml; do [ "$f" = docs/dependabot.yml ] || files+=("$f"); done
+          actionlint "${files[@]}"
   ci-ok:
     needs: [tests, actionlint]
     if: always()

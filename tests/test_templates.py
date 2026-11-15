@@ -8,7 +8,9 @@ CALLER = (ROOT / 'docs/gates-caller.yml').read_text()
 RERUN = (ROOT / 'docs/gates-rerun.yml').read_text()
 CI_OK = (ROOT / 'docs/ci-ok.yml').read_text()
 WORKFLOWS = {p.relative_to(ROOT).as_posix(): p.read_text() for p in
-             sorted((ROOT / '.github/workflows').glob('*.yml')) + sorted((ROOT / 'docs').glob('*.yml'))}
+             sorted((ROOT / '.github/workflows').glob('*.yml')) + sorted((ROOT / 'docs').glob('*.yml'))
+             if p.name != 'dependabot.yml'}
+DEPENDABOT = (ROOT / 'docs/dependabot.yml').read_text()
 
 
 def jobs(text):
@@ -86,6 +88,24 @@ class CallerTest(unittest.TestCase):
         self.assertIn('if: always()', found['ci-ok'])
         self.assertIn('("success", "skipped")', found['ci-ok'])
         self.assertIn('check: classify', found['changes'])
+
+
+class DependabotTest(unittest.TestCase):
+    def test_the_template_has_one_monthly_group_for_all_actions(self):
+        body = '\n'.join(x for x in DEPENDABOT.splitlines() if not x.startswith('#'))
+        self.assertEqual(body, 'version: 2\nupdates:\n  - package-ecosystem: github-actions\n    directory: /\n'
+                               '    schedule:\n      interval: monthly\n    groups:\n      actions:\n        patterns: ["*"]')
+
+    def test_the_template_is_a_copy_path_of_the_gates(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'gates'))
+        import gate
+        self.assertEqual(gate.COPIES['.github/dependabot.yml'], 'docs/dependabot.yml')
+
+    def test_this_repository_uses_the_same_schedule_and_group(self):
+        own = (ROOT / '.github/dependabot.yml').read_text()
+        self.assertIn('interval: monthly', own)
+        self.assertIn('    groups:\n      actions:\n        patterns: ["*"]', own)
 
 
 if __name__ == '__main__':

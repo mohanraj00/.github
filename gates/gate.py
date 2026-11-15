@@ -48,7 +48,10 @@ CLAUDE_WORKFLOW = '.github/workflows/claude-review.yml'
 # The paths come from "Adopt the gates in a project" in README.md. The workflow copy differs only in the pin.
 UPSTREAM = 'mohanraj00/.github'
 COPIES = {'docs/STANDARD.md': 'docs/STANDARD.md', 'tools/claude_review.py': 'gates/claude_review.py',
-          CLAUDE_WORKFLOW: 'docs/claude-review.yml'}
+          CLAUDE_WORKFLOW: 'docs/claude-review.yml', '.github/dependabot.yml': 'docs/dependabot.yml'}
+# An action bump of Dependabot changes only the SHA and the version comment of a uses line.
+DEPENDABOT = 'dependabot[bot]'
+USES = re.compile(rb'(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@([0-9a-f]{40}) # (v?[0-9][0-9A-Za-z.+-]*)(\r?\n)?')
 PIN_FILE = '.github/workflows/gates.yml'
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
@@ -186,7 +189,7 @@ class GitHub:
     def files(self):
         """Return (files, complete). Each file is {path, previous, lines}."""
         items, complete = self.pages('/repos/%s/pulls/%d/files' % (self.repo, self.number))
-        return [{'path': x['filename'], 'previous': x.get('previous_filename'),
+        return [{'path': x['filename'], 'previous': x.get('previous_filename'), 'status': x.get('status'),
                  'lines': x.get('additions', 0) + x.get('deletions', 0)} for x in items], complete
 
     def comments(self):
@@ -595,7 +598,41 @@ def copy_check(gh, pr, listed):
     return proved, None
 
 
-def security_review(gh, config, pr, paths, complete, comments, changed):
+def bump_line(a, b):
+    """Return the action name if the two lines differ only in the SHA and the version comment of one uses line, else None."""
+    old, new = USES.fullmatch(a), USES.fullmatch(b)
+    if not old or not new or old.group(1, 2, 5) != new.group(1, 2, 5) or old.group(3) == new.group(3):
+        return None
+    return new.group(2).decode()
+
+
+def bump_check(gh, pr, files):
+    """Return (proved lines, None) if the PR is an action bump of Dependabot, else (None, reason).
+    Each changed file keeps its lines, and each changed line changes only the SHA and the version comment of a uses line."""
+    head, base = pr['head']['sha'], pr['base']['sha']
+    proved = []
+    for item in files:
+        path = item['path']
+        if item.get('status') != 'modified' or item.get('previous'):
+            return None, '%s is not a modified file with the same path.' % show(path)
+        before, after = gh.content(gh.repo, path, base), gh.content(gh.repo, path, head)
+        if not before or not after:
+            return None, 'Cannot read %s at the base or the head.' % show(path)
+        old, new = before[1].splitlines(True), after[1].splitlines(True)
+        if len(old) != len(new):
+            return None, '%s adds or removes lines.' % show(path)
+        for number, (a, b) in enumerate(zip(old, new), 1):
+            if a != b:
+                action = bump_line(a, b)
+                if not action:
+                    return None, '%s line %d is not only a new SHA and version of a uses line.' % (show(path), number)
+                proved.append('%s line %d: %s gets a new SHA and version.' % (show(path), number, show(action)))
+    if not proved:
+        return None, 'The PR changes no uses line.'
+    return proved, None
+
+
+def security_review(gh, config, pr, paths, complete, comments, changed, files=()):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     forced = blocks(gh, gh.number, 'security-needed', labels)
@@ -603,6 +640,15 @@ def security_review(gh, config, pr, paths, complete, comments, changed):
     if complete and not listed and not forced:
         return True, ['No listed path changed.'], []
     lines = []
+    if complete and not forced and (pr.get('user') or {}).get('login') == DEPENDABOT:
+        # An action bump of Dependabot needs no review. The PR stays level 1, so the owner reads the SHAs before the merge.
+        try:
+            proved, reason = bump_check(gh, pr, files)
+        except (OSError, GateError, KeyError, TypeError, ValueError) as error:
+            proved, reason = None, 'The bump check failed closed (%s: %s).' % (type(error).__name__, show(error))
+        if proved:
+            return True, ['The PR is an action bump of %s. No review is necessary.' % DEPENDABOT] + proved, []
+        lines.append('Bump check: ' + reason)
     if complete and not forced:
         # An exact copy of the gate files and a pin change need no new review. The review of UPSTREAM covers them.
         try:
@@ -834,7 +880,7 @@ def run(check, gh, event, config, template=''):
         else:
             files, complete = gh.files()
             paths = [p for x in files for p in [x['path']] + ([x['previous']] if x['previous'] else [])]
-            passed, lines, drop = security_review(gh, config, pr, paths, complete, comments, changed)
+            passed, lines, drop = security_review(gh, config, pr, paths, complete, comments, changed, files)
     for name in drop:
         gh.remove_label(name)
     return passed, lines, {}

@@ -98,7 +98,8 @@ After a clean security review, a new push needs a new review only if the new com
 The security review of `mohanraj00/.github` covers the copies of its files in each project. Thus these listed changes need no review:
 
 - an exact copy of a file of `mohanraj00/.github` at the pinned SHA;
-- a change of only the SHA in a pin line of the gates action, if the new SHA is on `main` of `mohanraj00/.github`.
+- a change of only the SHA in a pin line of the gates action, if the new SHA is on `main` of `mohanraj00/.github`;
+- an action bump PR of Dependabot. The PR author is `dependabot[bot]`. Each changed line is a `uses:` line, where only the 40-character SHA and its version comment change. No other file or line changes.
 
 The gate proves each one. Each other listed change still needs a review. The PR stays level 1.
 
@@ -157,7 +158,8 @@ Each repository has the same 4 required checks:
 - The gates run from the base branch, so a PR cannot change its own gate.
 - Package the gates as a composite action, so that the tools and the workflow cannot differ.
 - Parse each workflow in CI. In a test, an invalid workflow passed the project check and both Codex reviews.
-- Use SHA pins, `permissions: {}`, job timeouts and `persist-credentials: false`. Enable Dependabot for actions.
+- Use SHA pins, `permissions: {}`, job timeouts and `persist-credentials: false`.
+- Enable Dependabot for actions with an exact copy of `docs/dependabot.yml` of `mohanraj00/.github` at `.github/dependabot.yml`. It has one group for all GitHub Actions updates and a monthly schedule, so each project gets one bump PR each month. The owner merges the bump PR, because it is level 1.
 - The Claude workflow uses the hardened aavanam form in each repository.
 - The main ruleset has squash only, linear history and resolved threads. It dismisses a stale approval when a push occurs. Remove classic protection.
 - The only bypass on `main` is the admin role, in PR-only mode. The owner uses it to merge a level 1 PR.

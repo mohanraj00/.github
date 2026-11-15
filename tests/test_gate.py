@@ -62,18 +62,18 @@ class Fake:
     def __init__(self, files=('README.md',), labels=(), head=HEAD, ref='claude/7-sample', fork=False, body=FILLED,
                  comments=(), issues=None, order=None, threads=0, compare=None, base_changed='', complete=True,
                  admins=('mohanraj00',), actors=None, objects=None, labeled=None, now='2026-11-07T13:00:00Z', unlabeled=None,
-                 runs=None, reviews=(), merge_base=BASE, contents=None, on_main=()):
+                 runs=None, reviews=(), merge_base=BASE, contents=None, on_main=(), author='mohanraj00'):
         self.repo, self.number = REPO, 7
         self.labeled = {x: ('mohanraj00', '2026-11-07T09:00:00Z') for x in labels} | (labeled or {})
         self.clock = gate.stamp(now)
         self.unlabeled = unlabeled or {}
         self.slept = 0
-        self.state = {'labels': [{'name': x} for x in labels], 'body': body,
+        self.state = {'labels': [{'name': x} for x in labels], 'body': body, 'user': {'login': author},
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
                       'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}}
         self.contents = contents or {}
         self.mains = set(on_main)
-        self.file_list = [{'path': x, 'previous': None, 'lines': 10} if isinstance(x, str) else x for x in files]
+        self.file_list = [{'path': x, 'previous': None, 'status': 'modified', 'lines': 10} if isinstance(x, str) else x for x in files]
         self.complete = complete
         self.comment_list = list(comments)
         self.issues = issues if issues is not None else [{'number': 5, 'open': True, 'repo': REPO, 'labels': ['accepted']}]
@@ -503,6 +503,93 @@ class CopyCheckTest(unittest.TestCase):
 
     def test_the_blob_sha_is_the_git_value(self):
         self.assertEqual(gate.blob_sha(b''), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391')
+
+
+CHECKOUT_OLD, CHECKOUT_NEW = '1' * 40, '2' * 40
+WORKFLOW = '.github/workflows/ci.yml'
+
+
+def workflow(sha, version, extra=b''):
+    return (b'jobs:\n  test:\n    steps:\n      - uses: actions/checkout@' + sha.encode() + b' # ' + version
+            + b'\n        with:\n          persist-credentials: false\n      - uses: actions/setup-python@' + sha.encode()
+            + b' # ' + version + b'\n' + extra)
+
+
+def bump(**change):
+    """Return the contents of a Dependabot PR that bumps two uses lines in one workflow and one in a composite action."""
+    found = {(REPO, WORKFLOW, TIP): workflow(CHECKOUT_OLD, b'v6.0.0'), (REPO, WORKFLOW, HEAD): workflow(CHECKOUT_NEW, b'v7.0.1'),
+             (REPO, 'gates/action.yml', TIP): b'runs:\n  steps:\n    - uses: a/b/c@' + CHECKOUT_OLD.encode() + b' # 1.2\n',
+             (REPO, 'gates/action.yml', HEAD): b'runs:\n  steps:\n    - uses: a/b/c@' + CHECKOUT_NEW.encode() + b' # 1.3\n'}
+    found.update({(REPO, path, HEAD): data for path, data in change.items()})
+    return found
+
+
+class BumpCheckTest(unittest.TestCase):
+    def run_check(self, files=(WORKFLOW, 'gates/action.yml'), contents=None, author=gate.DEPENDABOT, labels=()):
+        fake = Fake(files=files, contents=bump() if contents is None else contents, author=author, labels=labels)
+        return check('security-review', fake)
+
+    def test_a_grouped_action_bump_passes_with_no_review(self):
+        passed, message, _ = self.run_check()
+        self.assertTrue(passed, message)
+        self.assertIn('The PR is an action bump of dependabot[bot]. No review is necessary.', message)
+        self.assertIn('.github/workflows/ci.yml line 4: actions/checkout gets a new SHA and version.', message)
+        self.assertIn('.github/workflows/ci.yml line 7: actions/setup-python gets a new SHA and version.', message)
+        self.assertIn('gates/action.yml line 3: a/b/c gets a new SHA and version.', message)
+
+    def test_the_bump_stays_level_1(self):
+        fake = Fake(files=[WORKFLOW], contents=bump(), author=gate.DEPENDABOT)
+        passed, message, _ = check('acceptance', fake)
+        self.assertFalse(passed)
+        self.assertIn('This PR is level 1', message)
+
+    def test_a_bump_from_another_author_needs_a_review(self):
+        passed, message, _ = self.run_check(author='mohanraj00')
+        self.assertFalse(passed)
+        self.assertNotIn('Bump check', message)
+        self.assertIn('@codex security review', message)
+
+    def test_a_bump_with_any_other_change_needs_a_review(self):
+        name = WORKFLOW + ' line %d is not only a new SHA and version of a uses line.'
+        cases = {
+            'another line': (bump(**{WORKFLOW: workflow(CHECKOUT_NEW, b'v7.0.1').replace(b'false', b'true')}), name % 6),
+            'another action': (bump(**{WORKFLOW: workflow(CHECKOUT_NEW, b'v7.0.1').replace(b'actions/checkout', b'evil/checkout')}), name % 4),
+            'a short SHA': (bump(**{WORKFLOW: workflow(CHECKOUT_NEW[:39], b'v7.0.1')}), name % 4),
+            'a branch': (bump(**{WORKFLOW: workflow(CHECKOUT_OLD, b'v6.0.0').replace(CHECKOUT_OLD.encode() + b' # v6.0.0', b'main', 1)}), name % 4),
+            'a comment change only': (bump(**{WORKFLOW: workflow(CHECKOUT_OLD, b'v7.0.1')}), name % 4),
+            'a text comment': (bump(**{WORKFLOW: workflow(CHECKOUT_NEW, b'run curl')}), name % 4),
+            'a new indent': (bump(**{WORKFLOW: workflow(CHECKOUT_NEW, b'v7.0.1').replace(b'      - uses', b'     - uses', 1)}), name % 4),
+            'an added line': (bump(**{WORKFLOW: workflow(CHECKOUT_NEW, b'v7.0.1', b'      - run: id\n')}), WORKFLOW + ' adds or removes lines.'),
+        }
+        for case, (contents, reason) in cases.items():
+            with self.subTest(case=case):
+                passed, message, _ = self.run_check(contents=contents)
+                self.assertFalse(passed)
+                self.assertIn('Bump check: ' + reason, message)
+                self.assertIn('@codex security review', message)
+
+    def test_a_bump_with_another_file_needs_a_review(self):
+        contents = bump(**{'src/a.py': b'print(2)\n'})
+        contents[(REPO, 'src/a.py', TIP)] = b'print(1)\n'
+        passed, message, _ = self.run_check(files=(WORKFLOW, 'src/a.py'), contents=contents)
+        self.assertFalse(passed)
+        self.assertIn('Bump check: src/a.py line 1 is not only a new SHA and version of a uses line.', message)
+        for item, reason in (({'path': WORKFLOW, 'previous': 'old.yml', 'status': 'renamed', 'lines': 2}, 'is not a modified file'),
+                             ({'path': '.github/workflows/new.yml', 'previous': None, 'status': 'added', 'lines': 2}, 'is not a modified file')):
+            with self.subTest(item=item):
+                passed, message, _ = self.run_check(files=(item,))
+                self.assertFalse(passed)
+                self.assertIn(reason, message)
+
+    def test_security_needed_and_an_api_error_need_a_review(self):
+        passed, message, _ = self.run_check(labels=['security-needed'])
+        self.assertFalse(passed)
+        self.assertNotIn('No review is necessary.', message)
+        error = urllib.error.HTTPError('https://api.github.com/x', 500, 'error', {}, io.BytesIO())
+        passed, message, _ = self.run_check(contents=bump(**{WORKFLOW: error}))
+        error.close()
+        self.assertFalse(passed)
+        self.assertIn('The bump check failed closed (HTTPError', message)
 
 
 class CrossReviewTest(unittest.TestCase):
