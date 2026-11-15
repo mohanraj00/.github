@@ -301,6 +301,42 @@ class SecurityTest(unittest.TestCase):
                 fake = Fake(files=['src/a.py'], comments=comments, compare={OLD: result})
                 self.assertFalse(check('security-review', fake)[0])
 
+    def test_the_summary_tells_if_a_review_is_necessary(self):
+        cases = [
+            ('not needed', Fake(files=['README.md']), 'Security review: not needed. No listed path changed.'),
+            ('listed paths', Fake(files=['src/a.py', 'tools/x.sh', '.github/workflows/ci.yml', 'go.mod', 'AGENTS.md']),
+             'Security review: needed. The PR changes: src/a.py (project security source), tools/x.sh (project boundary), '
+             '.github/workflows/ci.yml (GitHub config), go.mod (dependency manifest), AGENTS.md (agent instructions).'),
+            ('still valid', Fake(files=['src/a.py'], comments=[comment(gate.CODEX, CLEAN_RECEIPT % OLD[:10])],
+                                 compare={OLD: (True, ['README.md'], True)}),
+             'Security review: the clean review is still valid. The commits after %s touch no listed path.' % OLD[:12]),
+            ('new commits', Fake(files=['src/a.py'], comments=[comment(gate.CODEX, CLEAN_RECEIPT % OLD[:10])],
+                                 compare={OLD: (True, ['README.md', 'src/b.py'], True)}),
+             'Security review: needed. The commits after the clean review of %s change: src/b.py (project security source).' % OLD[:12]),
+            ('head', Fake(files=['src/a.py'], comments=[comment(gate.CODEX, CLEAN_RECEIPT % HEAD[:10])]),
+             'Security review: the clean review of head %s is valid.' % HEAD[:12]),
+        ]
+        for title, fake, expected in cases:
+            with self.subTest(title):
+                self.assertEqual(check('security-review', fake)[2], {'summary': expected})
+
+    def test_main_writes_the_summary_to_the_job_summary_and_the_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / '.github').mkdir()
+            (root / '.github/gates.json').write_text(json.dumps(dict(CONFIG, version=1)))
+            (root / 'event.json').write_text(json.dumps(event()))
+            env = {'GITHUB_EVENT_PATH': str(root / 'event.json'), 'GITHUB_WORKSPACE': folder, 'GITHUB_TOKEN': 't',
+                   'GITHUB_OUTPUT': str(root / 'out'), 'GITHUB_STEP_SUMMARY': str(root / 'summary')}
+            fake = Fake(files=['src/[x](y).py'])
+            with mock.patch.dict(os.environ, env), mock.patch.object(gate, 'GitHub', return_value=fake), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(gate.main(['security-review']), 1)
+            self.assertEqual((root / 'out').read_text(),
+                             'summary=Security review: needed. The PR changes: src/[x](y).py (project security source).\n')
+            self.assertEqual((root / 'summary').read_text(),
+                             'Security review: needed. The PR changes: src/\\[x\\]\\(y\\).py \\(project security source\\).\n')
+
     def test_security_needed_forces_a_review_of_the_head(self):
         fake = Fake(files=['README.md'], labels=['security-needed'])
         self.assertFalse(check('security-review', fake)[0])

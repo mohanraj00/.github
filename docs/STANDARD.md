@@ -95,6 +95,8 @@ Each project names its boundary files. It does not list all of its source. A cod
 
 After a clean security review, a new push needs a new review only if the new commits touch a listed path.
 
+Before you ask for a security review, read the `Security review:` line in the job summary of the `security-review` check. If the line says "not needed" or "valid", do not ask. If the line is not there, the project pins an older gates SHA.
+
 The security review of `mohanraj00/.github` covers the copies of its files in each project. Thus these listed changes need no review:
 
 - an exact copy of a file of `mohanraj00/.github` at the pinned SHA;
