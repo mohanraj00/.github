@@ -32,6 +32,10 @@ FORK_LINES = 400
 CHECKS = ['cross-review', 'security-review', 'acceptance', 'classify', 'claude-review']
 # The standard allows at most this number of reviews of one kind for each PR.
 CLAUDE_CAP = 3
+# The cap of "@codex review" requests from an admin on one PR. The review-cap-lifted label lifts it for one head and base.
+CODEX_CAP = 3
+CODEX_REQUEST = re.compile(r'\s*@codex review\s*(?:\n|$)', re.I)
+CAP_LABEL = 'review-cap-lifted'
 
 # The Codex GitHub integration posts as this app. A user cannot post as an app.
 CODEX = 'chatgpt-codex-connector[bot]'
@@ -70,7 +74,7 @@ WAIT = 120
 BIND = {
     'acceptance': ('accepted', 'ready-for-review'),
     'security-review': ('security-reviewed',),
-    'cross-review': ('cross-reviewed',),
+    'cross-review': ('cross-reviewed', CAP_LABEL),
     'classify': (),
     'claude-review': (),
 }
@@ -474,15 +478,39 @@ def builder_of(gh, pr):
     return None, 'no agent label and no harness branch prefix'
 
 
+def codex_requests(gh, comments):
+    """Return the number of "@codex review" requests on the PR from a user with the admin role.
+    A request from another user does not count, so a fork contributor cannot use the cap to stop a PR."""
+    admins = {}
+    for item in comments:
+        login = (item.get('user') or {}).get('login') or ''
+        if login and CODEX_REQUEST.match(item.get('body') or '') and login not in admins:
+            admins[login] = gh.is_admin(login)
+    return sum(1 for item in comments if CODEX_REQUEST.match(item.get('body') or '')
+               and admins.get((item.get('user') or {}).get('login') or ''))
+
+
 def cross_review(gh, pr, comments, changed):
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     builder, source = builder_of(gh, pr)
     valid, stale = label_state(gh, 'cross-reviewed', labels, (head, base))
-    lines, drop = [], ['cross-reviewed'] if stale else []
+    lifted, cap_stale = label_state(gh, CAP_LABEL, labels, (head, base))
+    lines, drop = [], (['cross-reviewed'] if stale else []) + ([CAP_LABEL] if cap_stale else [])
     if builder in (None, 'claude'):
         name = 'No harness' if builder is None else 'Claude Code'
         lines.append('Builder: %s, from %s. The code reviewer is the Codex app.' % (name, source))
+        count = codex_requests(gh, comments)
+        if count > CODEX_CAP and not lifted:
+            if valid:
+                return True, lines + ['The cross-reviewed label applies to head %s.' % head[:12]], drop
+            lines.append('The PR has %d "@codex review" requests. The cap is %d for each PR.' % (count, CODEX_CAP))
+            if cap_stale:
+                lines.append('The %s label has no approval record for head %s on base %s. The owner adds the label again.' % (CAP_LABEL, head[:12], base))
+            lines.append('Codex review cap reached. Examine the approach and report to the owner.')
+            return False, lines, drop
+        if count > CODEX_CAP:
+            lines.append('The %s label applies to head %s, so the cap of %d requests does not apply.' % (CAP_LABEL, head[:12], CODEX_CAP))
         review, errors = codex_code(comments, changed)
         lines += errors
         if review and review['commit_sha'] == head and review['status'] == 'completed':
@@ -510,7 +538,7 @@ def cross_review(gh, pr, comments, changed):
     else:
         lines.append('Builder: unknown value "%s", from %s.' % (show(builder), source))
     if valid:
-        return True, lines + ['The cross-reviewed label applies to head %s.' % head[:12]], []
+        return True, lines + ['The cross-reviewed label applies to head %s.' % head[:12]], drop
     if stale:
         lines.append('The cross-reviewed label has no approval record for head %s on base %s. Review the current change, then add the label again.' % (head[:12], base))
     lines.append('The cross-review check needs a clean review of head %s from the other harness, or the cross-reviewed label for an agy or owner review.' % head[:12])

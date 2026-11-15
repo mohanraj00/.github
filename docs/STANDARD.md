@@ -46,7 +46,8 @@ The gates do not protect against an actor with write access. That actor uses the
 
 - If the code reviewer is not available, agy does the review. If agy built the change or is not available, the owner does a manual review.
 - Ask one time for each head commit, and at most 3 times for each PR. The `gate` job of the Claude workflow stops a second Claude review of one kind for a head, and a Claude review after 3 of one kind.
-- At the cap, stop the requests. Examine the approach, then report to the owner. The owner decides if more reviews are necessary.
+- The `cross-review` check fails if a PR has more than 3 `@codex review` requests from the owner login. The text is "Codex review cap reached. Examine the approach and report to the owner."
+- At the cap, stop the requests. Examine the approach, then report to the owner. The owner decides if more reviews are necessary. To permit more requests, the owner adds the `review-cap-lifted` label. The gate records the label for the current head and base, as for the other owner labels.
 - When a finding shows a class of problem, fix all instances of the class in the same commit.
 - Do not make a commit only for a nit. Close the thread with a reason.
 - If a finding is about code that the PR did not change, file an issue. It does not block the PR.
