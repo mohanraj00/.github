@@ -15,6 +15,9 @@ outputs:
   docs_only:
     description: For classify only. true for a docs-only change.
     value: ${{ steps.gate.outputs.docs_only }}
+  summary:
+    description: For security-review only. One line that tells if a security review is necessary, and why. The job summary also gets this line.
+    value: ${{ steps.gate.outputs.summary }}
   reason:
     description: For claude-review only. The reason when the check stops the request.
     value: ${{ steps.gate.outputs.reason }}

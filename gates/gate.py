@@ -99,6 +99,12 @@ SHARED_SECURITY = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md', 'docs/RE
 SHARED_LEVEL1 = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md']
                  + anywhere(['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']) + anywhere(['.agents/*', '.claude/*', '.codex/*'])
                  + anywhere(MANIFESTS))
+# The category of each shared security pattern, in the order of the check.
+SHARED_CATEGORIES = [('GitHub config', ['.github/*']),
+                     ('standard document', ['CONSTITUTION.md', 'docs/STANDARD.md', 'docs/REVIEW.md', 'SECURITY.md']),
+                     ('agent instructions', anywhere(AGENT_FILES)),
+                     ('agent config', anywhere(['.agents/*', '.claude/*', '.codex/*', '.gemini/*'])),
+                     ('dependency manifest', anywhere(MANIFESTS))]
 CONFIG_KEYS = ['code', 'security_sources', 'not_security', 'boundaries', 'level1', 'generated']
 
 
@@ -109,6 +115,11 @@ class GateError(Exception):
 def show(text):
     """Return text with control characters escaped, so that a file name cannot write a workflow command."""
     return json.dumps(str(text))[1:-1]
+
+
+def markdown(text):
+    """Return text with the Markdown characters escaped, so that a file name cannot add a link or a table to the job summary."""
+    return re.sub(r'([\\`*_{}\[\]()<>#+!|~&-])', r'\\\1', text)
 
 
 def load_config(path):
@@ -143,6 +154,18 @@ def classify(config, paths):
     other = [x for x in paths if x not in security and x not in level1 and x not in code]
     return {'security': security, 'level1': level1, 'code': code,
             'docs_only': bool(paths) and len(other) == len(paths)}
+
+
+def category(config, path):
+    """Return the category of a listed path, in the order of the classify check."""
+    for name, patterns in SHARED_CATEGORIES:
+        if match(path, patterns):
+            return name
+    return 'project boundary' if match(path, config['boundaries']) else 'project security source'
+
+
+def described(config, paths):
+    return ', '.join('%s (%s)' % (show(x), category(config, x)) for x in paths)
 
 
 class GitHub:
@@ -633,12 +656,13 @@ def bump_check(gh, pr, files):
 
 
 def security_review(gh, config, pr, paths, complete, comments, changed, files=()):
+    """Return (passed, lines, drop, summary). The summary is one line that tells the agent if a security review is necessary."""
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     forced = blocks(gh, gh.number, 'security-needed', labels)
     listed = classify(config, paths)['security']
     if complete and not listed and not forced:
-        return True, ['No listed path changed.'], []
+        return True, ['No listed path changed.'], [], 'Security review: not needed. No listed path changed.'
     lines = []
     if complete and not forced and (pr.get('user') or {}).get('login') == DEPENDABOT:
         # An action bump of Dependabot needs no review. The PR stays level 1, so the owner reads the SHAs before the merge.
@@ -647,7 +671,8 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
         except (OSError, GateError, KeyError, TypeError, ValueError) as error:
             proved, reason = None, 'The bump check failed closed (%s: %s).' % (type(error).__name__, show(error))
         if proved:
-            return True, ['The PR is an action bump of %s. No review is necessary.' % DEPENDABOT] + proved, []
+            return (True, ['The PR is an action bump of %s. No review is necessary.' % DEPENDABOT] + proved, [],
+                    'Security review: not needed. The PR is a proved action bump.')
         lines.append('Bump check: ' + reason)
     if complete and not forced:
         # An exact copy of the gate files and a pin change need no new review. The review of UPSTREAM covers them.
@@ -656,7 +681,8 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
         except (OSError, GateError, KeyError, TypeError, ValueError) as error:
             proved, reason = None, 'The copy check failed closed (%s: %s).' % (type(error).__name__, show(error))
         if proved:
-            return True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, []
+            return (True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, [],
+                    'Security review: not needed. Each listed path is a proved copy or pin change.')
         lines.append('Copy check: ' + reason)
     if not complete:
         lines.append('The PR has more files than GitHub lists, so the change is security relevant.')
@@ -664,6 +690,8 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
         lines.append('Listed paths: ' + ', '.join(show(x) for x in listed))
     if forced:
         lines.append('The security-needed label requires a security review of the current head.')
+    # For each clean review of an earlier commit: (full SHA, the listed paths of the later commits, or None if no compare is valid).
+    seen = {}
 
     def covers(commit):
         """A review of an earlier commit stays valid if the later commits touch no listed path.
@@ -676,16 +704,34 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
         if forced:
             return False
         ancestor, later, complete = gh.compare(full, head)
-        return ancestor and complete and not classify(config, later)['security']
+        touched = classify(config, later)['security'] if ancestor and complete else None
+        seen.setdefault(commit, (full, touched))
+        return touched == []
 
     def name(commit):
         return 'head %s' % head[:12] if head.startswith(commit) else 'commit %s, and the later commits touch no listed path' % commit[:12]
 
+    def summary(clean):
+        """Tell the agent what the next security review must cover."""
+        if clean and head.startswith(clean):
+            return 'Security review: the clean review of head %s is valid.' % head[:12]
+        if clean and clean in seen:
+            full, touched = seen[clean]
+            if touched == []:
+                return 'Security review: the clean review is still valid. The commits after %s touch no listed path.' % full[:12]
+            if touched:
+                return 'Security review: needed. The commits after the clean review of %s change: %s.' % (full[:12], described(config, touched))
+        if forced:
+            return 'Security review: needed. The security-needed label requires a review of head %s.' % head[:12]
+        if not complete:
+            return 'Security review: needed. The PR has more files than GitHub lists.'
+        return 'Security review: needed. The PR changes: %s.' % described(config, listed)
+
     results, errors = codex_security(comments, changed)
     lines += errors
-    if results and results[-1][0] and results[-1][1] and covers(results[-1][0]):
-        commit = results[-1][0]
-        return True, lines + ['The Codex security review of %s found no security issues.' % name(commit)], []
+    clean = results[-1][0] if results and results[-1][0] and results[-1][1] else None
+    if clean and covers(clean):
+        return True, lines + ['The Codex security review of %s found no security issues.' % name(clean)], [], summary(clean)
     # A Claude security result is advisory. It never passes the gate. The owner reads it and adds the security-reviewed label.
     # A Codex result with open findings stops the advisory line too.
     codex_open = bool(results) and bool(results[-1][0]) and not results[-1][1]
@@ -697,13 +743,15 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
     if 'security-reviewed' in labels:
         bound, pending = bound_heads(gh, 'security-reviewed', labels, base)
         if bound and covers(bound[-1]):
-            return True, lines + ['The security-reviewed label applies to %s.' % name(bound[-1])], []
+            return True, lines + ['The security-reviewed label applies to %s.' % name(bound[-1])], [], summary(bound[-1])
         lines.append('The security-reviewed label has no approval record that covers head %s on base %s. Review the current change, then add the label again.' % (head[:12], base))
         drop = [] if pending else ['security-reviewed']
+        if not clean and bound:
+            clean = bound[-1]
     if results and results[-1][0] and not results[-1][1]:
         lines.append('The latest Codex security review has open findings. Fix them and ask again, or write the answer on the PR and ask the owner to add the security-reviewed label.')
     lines.append('Post "@codex security review" as a separate comment. The check passes when the Codex security review of head %s finds no security issues, or when the owner adds the security-reviewed label.' % head[:12])
-    return False, lines, drop
+    return False, lines, drop, summary(clean)
 
 
 def sections(text):
@@ -857,6 +905,7 @@ def run(check, gh, event, config, template=''):
         paths = [p for x in files for p in [x['path']] + ([x['previous']] if x['previous'] else [])]
         docs = complete and classify(config, paths)['docs_only']
         return True, ['Docs-only change.' if docs else 'The project jobs run.'], {'docs_only': str(docs).lower(), 'code': str(not docs).lower()}
+    outputs = {}
     label = (event.get('label') or {}).get('name')
     # Only an admin label makes a record. A label from another user has no record, so the gate removes it.
     sender = (event.get('sender') or {}).get('login') or ''
@@ -880,10 +929,11 @@ def run(check, gh, event, config, template=''):
         else:
             files, complete = gh.files()
             paths = [p for x in files for p in [x['path']] + ([x['previous']] if x['previous'] else [])]
-            passed, lines, drop = security_review(gh, config, pr, paths, complete, comments, changed, files)
+            passed, lines, drop, summary = security_review(gh, config, pr, paths, complete, comments, changed, files)
+            outputs = {'summary': summary}
     for name in drop:
         gh.remove_label(name)
-    return passed, lines, {}
+    return passed, lines, outputs
 
 
 def main(argv=None):
@@ -930,7 +980,12 @@ def main(argv=None):
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
             for key, value in outputs.items():
                 out.write('%s=%s\n' % (key, value))
+    if os.environ.get('GITHUB_STEP_SUMMARY') and outputs.get('summary'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+            out.write(markdown(outputs['summary']) + '\n')
     print('\n'.join(lines))
+    if outputs.get('summary'):
+        print(outputs['summary'])
     if not passed:
         print('::error title=%s::%s' % (args.check, lines[-1]))
         return 1
