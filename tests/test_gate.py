@@ -677,6 +677,52 @@ class CrossReviewTest(unittest.TestCase):
         self.assertIn('no approval record for head', message)
 
 
+    def requests(self, count, login='mohanraj00'):
+        return [comment(login, '@codex review\nHead: %s' % HEAD[:7], '2026-11-07T0%d:00:00Z' % i) for i in range(count)]
+
+    def test_a_fourth_codex_request_fails_cross_review(self):
+        clean = comment(gate.CODEX, state())
+        self.assertTrue(check('cross-review', Fake(comments=self.requests(3) + [clean]))[0])
+        passed, message, _ = check('cross-review', Fake(comments=self.requests(4) + [clean]))
+        self.assertFalse(passed)
+        self.assertIn('The PR has 4 "@codex review" requests. The cap is 3 for each PR.', message)
+        self.assertTrue(message.endswith('Codex review cap reached. Examine the approach and report to the owner.'))
+
+    def test_only_a_code_review_request_from_an_admin_counts(self):
+        clean = comment(gate.CODEX, state())
+        others = (self.requests(4, login='someone') + [comment('mohanraj00', '@codex security review')] * 4
+                  + [comment('mohanraj00', 'Ask @codex review later.')] * 4)
+        self.assertTrue(check('cross-review', Fake(comments=self.requests(3) + others + [clean]))[0])
+        upper = [comment('mohanraj00', '@Codex Review')]
+        self.assertFalse(check('cross-review', Fake(comments=self.requests(3) + upper + [clean]))[0])
+
+    def test_the_owner_label_lifts_the_cap_for_one_head(self):
+        clean = comment(gate.CODEX, state())
+        comments = self.requests(5) + [clean, record(gate.CAP_LABEL)]
+        passed, message, _ = check('cross-review', Fake(labels=[gate.CAP_LABEL], comments=comments))
+        self.assertTrue(passed, message)
+        self.assertIn('The review-cap-lifted label applies to head aaaaaaaaaaaa', message)
+        fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(5) + [clean, record(gate.CAP_LABEL, head=OLD)])
+        passed, message, _ = check('cross-review', fake)
+        self.assertFalse(passed)
+        self.assertEqual(fake.removed, [gate.CAP_LABEL])
+        self.assertIn('Codex review cap reached.', message)
+
+    def test_an_admin_label_posts_the_cap_record(self):
+        fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(4) + [comment(gate.CODEX, state())])
+        passed, message, _ = check('cross-review', fake, event('labeled', label=gate.CAP_LABEL))
+        self.assertTrue(passed, message)
+        self.assertEqual(fake.posted, [gate.record_body(gate.CAP_LABEL, HEAD, 'main')])
+        fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(4) + [comment(gate.CODEX, state())])
+        self.assertFalse(check('cross-review', fake, event('labeled', label=gate.CAP_LABEL, sender='someone'))[0])
+        self.assertEqual(fake.posted, [])
+
+    def test_the_cross_reviewed_label_still_passes_at_the_cap(self):
+        fake = Fake(labels=['cross-reviewed'], comments=self.requests(4) + [record('cross-reviewed')])
+        passed, message, _ = check('cross-review', fake)
+        self.assertTrue(passed, message)
+
+
 class AcceptanceTest(unittest.TestCase):
     def test_a_level0_pr_passes(self):
         passed, message, _ = check('acceptance', Fake(files=['src/a.py', 'README.md']))
