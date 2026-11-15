@@ -40,7 +40,10 @@ jobs:
       # actionlint reads gates/action.yml through the local uses: ./gates step of gates.yml.
       # docs/dependabot.yml is not a workflow, so actionlint does not read it. tests/test_templates.py checks it.
       - name: Parse each workflow and template
-        run: actionlint .github/workflows/*.yml $(find docs -maxdepth 1 -name '*.yml' ! -name dependabot.yml | sort)
+        run: |
+          files=(.github/workflows/*.yml)
+          for f in docs/*.yml; do [ "$f" = docs/dependabot.yml ] || files+=("$f"); done
+          actionlint "${files[@]}"
   ci-ok:
     needs: [tests, actionlint]
     if: always()
