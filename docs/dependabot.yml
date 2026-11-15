@@ -1,0 +1,12 @@
+# Copy this file to .github/dependabot.yml of the project. Do not change it, so that the copy check proves the copy.
+# One group holds all GitHub Actions updates, so each project gets one bump PR each month. The schedule agrees with
+# the monthly release of the gates. The security-review gate proves a bump PR of this group with no review.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

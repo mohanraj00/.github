@@ -1,6 +1,11 @@
+# The Dependabot settings of this repository. The project form is docs/dependabot.yml.
+# This repository also has the composite action in /gates, so it lists two directories.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directories: ["/", "/gates"]
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
