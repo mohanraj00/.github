@@ -89,6 +89,10 @@ If a PR changes only some of the pin lines in `gates.yml`, the copy check uses t
 
 The copy check accepts each new pin that is on `main` of this repository, also a commit before the old pin. Thus a PR can move a project to an older release of the gates with no security review. The stop rule does not fix this now, because its severity is P3. The PR is level 1, so the owner decides each pin change before the merge.
 
+#### Codex request after a pass (#29, P2)
+
+A request comment does not start the gates, and `gates-rerun` runs only a failed job again. Thus if `cross-review` passed for a head, a fourth `@codex review` request for the same head does not change the check. After a push, the gates run again and read the count, so the next head fails at the cap. The stop rule does not fix this now, because its severity is P2 and only the owner login counts as a requester. The standard also allows one request for each head.
+
 ## Constitution template
 
 Each project constitution uses the sections and the exact governance block in [`docs/constitution-template.md`](docs/constitution-template.md). The block has version markers, so a check can compare it with the template.
