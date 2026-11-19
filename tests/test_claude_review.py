@@ -206,7 +206,7 @@ class CommentTest(unittest.TestCase):
 
     def test_the_post_job_gives_the_kind_of_the_request(self):
         self.assertIn('--kind "$KIND"', WORKFLOW)
-        self.assertEqual(WORKFLOW.count("KIND: ${{ github.event.comment.body == '%s' && 'security' || 'code' }}" % claude_review.REQUESTS['security']), 2)
+        self.assertEqual(WORKFLOW.count("KIND: ${{ needs.gate.outputs.kind }}"), 2)
 
     def test_comment_with_a_missing_artifact_is_the_failure_text(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -239,6 +239,21 @@ class CommentTest(unittest.TestCase):
         call.assert_called_once_with('POST', '/repos/o/r/issues/7/comments', 'sample', {'body': 'NO VALID CLAUDE REVIEW\n\nHead: ' + HEAD})
 
 
+class RequestKindTest(unittest.TestCase):
+    def test_the_first_line_decides_with_case_and_white_space_normalized(self):
+        code, security = claude_review.REQUESTS['code'], claude_review.REQUESTS['security']
+        for body, kind in ((code, 'code'), (security, 'security'), (code + '\nHead: abc1234', 'code'), ('\n' + code.upper() + '\r\n', 'code'),
+                           (security.replace(' ', ' \t '), 'security')):
+            with self.subTest(body=body):
+                self.assertEqual(claude_review.request_kind(body), kind)
+
+    def test_other_text_is_not_a_request(self):
+        code = claude_review.REQUESTS['code']
+        for body in (None, '', ' \n', code + ' Extra.', 'Note\n' + code, '@claude review this PR.', code.replace('review', 'reviews')):
+            with self.subTest(body=body):
+                self.assertIsNone(claude_review.request_kind(body))
+
+
 class PromptTest(unittest.TestCase):
     def test_each_prompt_is_fixed_and_says_that_the_diff_is_untrusted(self):
         for kind in ('code', 'security'):
@@ -250,7 +265,7 @@ class PromptTest(unittest.TestCase):
     def test_the_workflow_never_gives_the_comment_to_a_shell_or_a_prompt(self):
         for line in WORKFLOW.splitlines():
             if 'github.event.comment.body' in line:
-                self.assertRegex(line.strip(), r"^(github\.event\.issue\.pull_request|\(?github\.event\.comment\.body == '|KIND: \$\{\{ github\.event\.comment\.body == ')")
+                self.assertRegex(line.strip(), r"^(github\.event\.issue\.pull_request|contains\(github\.event\.comment\.body, '@claude'\))")
         for block in re.findall(r'run: .*(?:\n {10,}.*)*', WORKFLOW):
             self.assertNotIn('${{', block)
 
@@ -315,7 +330,11 @@ class WorkflowTest(unittest.TestCase):
     def test_the_request_texts_are_the_texts_in_the_review_rules(self):
         requests = set(claude_review.REQUESTS.values())
         self.assertEqual(len(requests), 2)
-        self.assertEqual(set(re.findall(r"body == '([^']+)'", WORKFLOW)), requests)
+        # The workflow never compares the whole comment with a text. The gate job reads the first line and sets the kind output.
+        self.assertNotIn('body ==', WORKFLOW)
+        self.assertEqual(WORKFLOW.count("contains(github.event.comment.body, '@claude')"), 2)
+        self.assertIn("if: ${{ needs.gate.outputs.kind != '' }}", WORKFLOW)
+        self.assertIn("if: ${{ always() && needs.gate.outputs.kind != '' }}", WORKFLOW)
 
     def test_the_cli_pin_is_exact(self):
         self.assertRegex(WORKFLOW, r'CLI_VERSION: \d+\.\d+\.\d+\n')

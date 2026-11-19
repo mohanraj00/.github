@@ -55,9 +55,19 @@ INCOMPLETE=re.compile(r'incomplete\W*review',re.I)
 RECOUNT=re.compile(r'^[^\w\n]*findings?[^\w\n]*[:=][^\w\n]*(\d+)',re.I|re.M)
 # For a count of 0, a severity tag P0 to P3 at any position in a line is also a finding.
 TAG=re.compile(r'(?<![\w.])P[0-3](?![\w.])')
-# The exact request texts. The workflow compares the comment body with these texts.
+# The request texts. The gate job reads the first line of the comment, with the case and the white space normalized.
 REQUESTS={'code':'@claude review this PR. Use the Review guidelines in AGENTS.md.',
     'security':'@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.'}
+
+def normalize(line):
+    """Return the line in lower case, with each run of white space as one space and no white space at the ends."""
+    return ' '.join(line.lower().split())
+
+def request_kind(body):
+    """Return 'code' or 'security' if the first line of the comment body is a request text, else None. Later lines, for example Head: <SHA>, do not count."""
+    lines=(body or '').strip().splitlines()
+    first=normalize(lines[0]) if lines else ''
+    return next((kind for kind,text in REQUESTS.items() if normalize(text)==first),None)
 HEAD=re.compile(r'[0-9a-f]{40}')
 LIMIT=60000
 # The checkout reads the default branch, and a comment on a PR needs both write permissions.

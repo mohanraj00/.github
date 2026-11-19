@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from claude_review import FAILED, MARKER as CLAUDE_MARKER, REQUESTS as CLAUDE_REQUESTS  # noqa: E402
+from claude_review import FAILED, MARKER as CLAUDE_MARKER, REQUESTS as CLAUDE_REQUESTS, request_kind as claude_request_kind  # noqa: E402
 
 API = 'https://api.github.com'
 # GitHub lists at most 3000 files for a PR. A longer list is security relevant and level 1.
@@ -912,12 +912,8 @@ def claude_request(gh, pr, comments, changed, kind):
 
 
 def request_kind(event):
-    """Return the kind of the exact request text in the comment. GitHub compares the texts with no regard to letter case."""
-    body = ((event.get('comment') or {}).get('body') or '').lower()
-    kinds = [kind for kind, text in CLAUDE_REQUESTS.items() if text.lower() == body]
-    if not kinds:
-        raise GateError('The comment is not a Claude review request.')
-    return kinds[0]
+    """Return the kind of the Claude request in the comment, or None. The first line decides: see claude_review.request_kind."""
+    return claude_request_kind((event.get('comment') or {}).get('body'))
 
 
 def run(check, gh, event, config, template=''):
@@ -940,7 +936,12 @@ def run(check, gh, event, config, template=''):
     pr = gh.pr()
     if check == 'claude-review':
         # The gate job has read permissions only, so it never drops a label.
-        return claude_request(gh, pr, comments, gh.base_changed_at(), request_kind(event))
+        kind = request_kind(event)
+        if kind is None:
+            # The workflow starts for each comment that names @claude. Other text passes with no kind, and the other jobs skip.
+            return True, ['The comment is not a Claude review request.'], {'kind': ''}
+        passed, lines, outputs = claude_request(gh, pr, comments, gh.base_changed_at(), kind)
+        return passed, lines, ({**outputs, 'kind': kind} if passed else outputs)
     if check == 'acceptance':
         files, complete = gh.files()
         passed, lines, drop = acceptance(gh, config, pr, files, complete, template)
@@ -963,6 +964,7 @@ def main(argv=None):
     parser.add_argument('check', choices=CHECKS)
     args = parser.parse_args(argv)
     outputs = {}
+    request = ''
     try:
         event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
         workspace = Path(os.environ.get('GITHUB_WORKSPACE') or '.')
@@ -972,6 +974,7 @@ def main(argv=None):
             issue = event.get('issue') or {}
             if 'comment' not in event or not issue.get('pull_request'):
                 raise GateError('The claude-review check runs only for an issue_comment event on a PR.')
+            request = request_kind(event) or ''
             gh = GitHub(event['repository']['full_name'], int(issue['number']), os.environ['GITHUB_TOKEN'])
             passed, lines, outputs = run(args.check, gh, event, None)
         elif 'pull_request' not in event:
@@ -1008,7 +1011,7 @@ def main(argv=None):
         passed, lines = False, ['The gate got data in an unknown format (%s: %s). The gate fails closed.' % (type(error).__name__, show(error))]
     if args.check == 'claude-review' and not passed:
         # The post job of the Claude review posts this reason. An output value has one line.
-        outputs = {'reason': ' '.join(lines).replace('\r', ' ').replace('\n', ' ')}
+        outputs = {'reason': ' '.join(lines).replace('\r', ' ').replace('\n', ' '), 'kind': request}
     if os.environ.get('GITHUB_OUTPUT') and outputs:
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
             for key, value in outputs.items():

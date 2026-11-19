@@ -1,5 +1,8 @@
 name: Claude review
-# A writer asks for a review with one of the two exact PR comments in docs/REVIEW.md. GitHub compares these texts with no regard to letter case.
+# A writer asks for a review with a PR comment. The first line of the comment must be one of the two request texts in docs/REVIEW.md.
+# The gate job compares that line with the case and the white space normalized. Later lines, for example Head: <SHA>, do not count.
+# GitHub expressions have no regular expressions, so the workflow starts for each comment of a writer that names @claude.
+# The gate job then sets the kind output, and it is empty for other text. Then the review job and the post job skip.
 # An issue comment event reads this workflow from main. The comment text selects a fixed prompt, and it never goes into the prompt.
 # The post job writes a marker for the cross-review and security-review gates. The project copies gates/claude_review.py
 # of mohanraj00/.github to tools/claude_review.py. Keep this file at .github/workflows/claude-review.yml: the marker holds
@@ -15,8 +18,7 @@ concurrency:
   group: >-
     claude-review-${{ github.event.issue.number }}-${{
     github.event.issue.pull_request &&
-    (github.event.comment.body == '@claude review this PR. Use the Review guidelines in AGENTS.md.' ||
-    github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.') &&
+    contains(github.event.comment.body, '@claude') &&
     contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
     'request' || github.run_id }}
   cancel-in-progress: false
@@ -27,8 +29,7 @@ jobs:
   gate:
     if: >-
       github.event.issue.pull_request &&
-      (github.event.comment.body == '@claude review this PR. Use the Review guidelines in AGENTS.md.' ||
-      github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.') &&
+      contains(github.event.comment.body, '@claude') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -39,6 +40,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
+      kind: ${{ steps.gate.outputs.kind }}
       reason: ${{ steps.gate.outputs.reason }}
       head: ${{ steps.gate.outputs.head }}
       base: ${{ steps.gate.outputs.base }}
@@ -50,6 +52,7 @@ jobs:
           check: claude-review
   review:
     needs: gate
+    if: ${{ needs.gate.outputs.kind != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: claude-review
@@ -93,7 +96,7 @@ jobs:
           test -s "$RUNNER_TEMP/input/pr.diff"
       - name: Write the fixed prompt
         env:
-          KIND: ${{ github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.' && 'security' || 'code' }}
+          KIND: ${{ needs.gate.outputs.kind }}
         run: python3 -B tools/claude_review.py prompt "$KIND" --diff "$RUNNER_TEMP/input/pr.diff" > "$RUNNER_TEMP/prompt.txt"
       # This is the npm package of the Linux x64 binary. The SHA-512 value is the registry integrity value of this version, in hex.
       - name: Install the Claude Code CLI
@@ -128,7 +131,7 @@ jobs:
   # If the gate job stops the request, the post job posts the reason of the gate job.
   post:
     needs: [gate, review]
-    if: ${{ always() && needs.gate.result != 'skipped' }}
+    if: ${{ always() && needs.gate.outputs.kind != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -156,5 +159,5 @@ jobs:
           REVIEW_RESULT: ${{ needs.review.result }}
           GATE_RESULT: ${{ needs.gate.result }}
           GATE_REASON: ${{ needs.gate.outputs.reason }}
-          KIND: ${{ github.event.comment.body == '@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.' && 'security' || 'code' }}
+          KIND: ${{ needs.gate.outputs.kind }}
         run: python3 -B tools/claude_review.py comment --status "$REVIEW_RESULT" --kind "$KIND" --gate "$GATE_RESULT" --output-dir "$RUNNER_TEMP/output" --post

@@ -14,10 +14,11 @@ Use two PRs. The gates read `.github/gates.json` from the base branch, so the co
 3. Copy [`docs/gates-rerun.yml`](docs/gates-rerun.yml) to `.github/workflows/gates-rerun.yml`.
 4. Put the project jobs in the skeleton [`docs/ci-ok.yml`](docs/ci-ok.yml), and use the same SHA.
 5. If the project has the Claude review workflow, copy [`gates/claude_review.py`](gates/claude_review.py) to `tools/claude_review.py`. Use [`docs/claude-review.yml`](docs/claude-review.yml) as the workflow, at the path `.github/workflows/claude-review.yml`. Replace the SHA of the gates action in its `gate` job with the SHA of step 2. Its post job gives the `--kind` argument, and its diff starts at the merge base of the base branch and the head. The marker names this merge base. The gates accept a marker only if its run is an `issue_comment` run of this workflow on the default branch. Thus a workflow on a branch cannot make a marker that the gates accept. When you change the SHA of the gates action, copy `gates/claude_review.py` of the same SHA. The gates do not accept a `v1` marker, because it names no merge base.
-6. Remove the old gate workflows and tools of the project, for example `pr-policy.yml` and `tools/pr_policy.py`. The gates also read the approval records of `pr_policy.py`.
-7. Merge the adoption PR. The checks `cross-review`, `security-review` and `acceptance` do not run on the adoption PR, because `pull_request_target` uses the workflow of the base branch. Only `ci-ok` runs on it.
-8. Copy [`docs/dependabot.yml`](docs/dependabot.yml) to `.github/dependabot.yml`. Do not change it.
-9. After the merge, in the main ruleset, require the 4 checks `ci-ok`, `cross-review`, `security-review` and `acceptance`. Do not require the 3 gate checks before the merge, because they cannot pass on the adoption PR.
+6. For the local agy review, use [`gates/cross_review.py`](gates/cross_review.py) at the SHA of step 2. Do not copy it to the project. Get a checkout of this repository at that SHA, then run `python3 -B <checkout>/gates/cross_review.py --base origin/main --work <new directory>` from the root of the project checkout. The tool reads `.github/gates.json` of the base revision to select the security review.
+7. Remove the old gate workflows and tools of the project, for example `tools/cross_review.py`, `pr-policy.yml` and `tools/pr_policy.py`. The gates also read the approval records of `pr_policy.py`.
+8. Merge the adoption PR. The checks `cross-review`, `security-review` and `acceptance` do not run on the adoption PR, because `pull_request_target` uses the workflow of the base branch. Only `ci-ok` runs on it.
+9. Copy [`docs/dependabot.yml`](docs/dependabot.yml) to `.github/dependabot.yml`. Do not change it.
+10. After the merge, in the main ruleset, require the 4 checks `ci-ok`, `cross-review`, `security-review` and `acceptance`. Do not require the 3 gate checks before the merge, because they cannot pass on the adoption PR.
 
 The keys of `.github/gates.json` are lists of `fnmatch` patterns. A `*` also matches `/`.
 
@@ -102,6 +103,14 @@ The bump check does not prove that the new SHA is a release of the named action.
 #### Base of an action bump (#28)
 
 The bump check and the copy check read the old file at the tip of the base branch, not at the merge base. If a different PR changes a workflow on the base branch after Dependabot opens its PR, the bump check fails. The gate then needs a security review. This failure is safe. To prove the bump again, comment `@dependabot rebase` on the PR.
+
+#### Comments that name @claude (#38)
+
+GitHub expressions have no regular expressions. Thus the Claude workflow starts its `gate` job for each comment of a writer that contains `@claude`. The `gate` job reads the first line, and for other text it sets no kind, so the `review` and `post` jobs skip. Such a comment uses the concurrency group of the requests. Thus a comment of a writer that names `@claude` can replace a pending request, and that request then posts no comment. Only an actor with write access can do this, and the threat model excludes that actor. Ask again if a request gets no comment.
+
+#### Local agy review without a token file (#38)
+
+If the agy login is not in the token file, for example in the macOS keychain, `gates/cross_review.py` cannot run agy in a new HOME. It runs agy with the real HOME and an empty allow list for the session. The global MCP servers and other settings of the user can then load. The prompt tells agy not to use tools, and agy runs with `--sandbox` in an empty directory. The tool prints a line when this occurs.
 
 ## Constitution template
 
