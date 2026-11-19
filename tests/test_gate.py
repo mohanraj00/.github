@@ -973,7 +973,7 @@ class ClaudeRequestTest(unittest.TestCase):
 
     def test_a_passed_request_names_the_approved_head_and_base(self):
         # The review job compares its fetched head, base and merge base with these outputs.
-        self.assertEqual(check('claude-review', Fake(), request())[2], {'head': HEAD, 'base': 'main', 'merge_base': BASE})
+        self.assertEqual(check('claude-review', Fake(), request())[2], {'head': HEAD, 'base': 'main', 'merge_base': BASE, 'kind': 'code'})
         self.assertEqual(check('claude-review', Fake(fork=True), request())[2], {})
 
     def test_a_request_without_a_merge_base_stops(self):
@@ -1032,8 +1032,25 @@ class ClaudeRequestTest(unittest.TestCase):
 
     def test_the_request_text_selects_the_kind(self):
         self.assertIn('security review', check('claude-review', Fake(), request(body=gate.CLAUDE_REQUESTS['security'].upper()))[1])
-        with self.assertRaises(gate.GateError):
-            check('claude-review', Fake(), request(body='@claude review this PR.'))
+
+    def test_the_first_line_selects_the_kind_and_a_later_line_does_not_stop_it(self):
+        code, security = gate.CLAUDE_REQUESTS['code'], gate.CLAUDE_REQUESTS['security']
+        for body, kind in ((code + '\nHead: abc1234', 'code'), (code + '\r\nHead: abc1234\r\n', 'code'),
+                           ('  ' + code.replace(' ', '   ') + '  ', 'code'), (code.upper() + '\n\nmore text', 'code'),
+                           ('\n' + security.replace(' ', '\t') + '\nHead: abc1234', 'security')):
+            with self.subTest(body=body):
+                passed, message, outputs = check('claude-review', Fake(), request(body=body))
+                self.assertTrue(passed, message)
+                self.assertEqual(outputs['kind'], kind)
+
+    def test_other_text_is_not_a_request_and_passes_with_no_kind(self):
+        code = gate.CLAUDE_REQUESTS['code']
+        for body in ('@claude review this PR.', '@claude', 'Please ask: ' + code, 'Head: abc1234\n' + code, code + ' Extra words.',
+                     code[:-1], '', None):
+            with self.subTest(body=body):
+                self.assertIsNone(gate.request_kind(request(body='x') | {'comment': {'body': body}}))
+                passed, message, outputs = gate.run('claude-review', Fake(), request(body='x') | {'comment': {'body': body}}, None)
+                self.assertEqual((passed, outputs), (True, {'kind': ''}))
 
 
 class MainTest(unittest.TestCase):
@@ -1084,7 +1101,8 @@ class MainTest(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn('::error title=claude-review::Stage 2 needs an owner approval', out.getvalue())
         self.assertTrue(output.startswith('reason=This PR comes from the fork someone/project. Stage 2 needs'))
-        self.assertEqual(output.count('\n'), 1)
+        self.assertTrue(output.endswith('kind=code\n'))
+        self.assertEqual(output.count('\n'), 2)
         self.assertEqual(self.main('claude-review')[0], 1)  # A pull_request_target event is not a request.
 
     def test_a_passed_claude_request_writes_the_head_and_base(self):
@@ -1097,7 +1115,7 @@ class MainTest(unittest.TestCase):
                 status = gate.main(['claude-review'])
             output = Path(folder, 'out').read_text()
         self.assertEqual(status, 0)
-        self.assertEqual(output, 'head=%s\nbase=main\nmerge_base=%s\n' % (HEAD, BASE))
+        self.assertEqual(output, 'head=%s\nbase=main\nmerge_base=%s\nkind=code\n' % (HEAD, BASE))
 
     def test_classify_writes_the_outputs(self):
         self.assertEqual(self.main('classify', files=['README.md'])[2], 'docs_only=true\ncode=false\n')

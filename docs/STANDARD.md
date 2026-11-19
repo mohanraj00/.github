@@ -45,6 +45,7 @@ The gates do not protect against an actor with write access. That actor uses the
 | No harness | Codex app | Codex security review | Claude workflow, with a security prompt |
 
 - If the code reviewer is not available, agy does the review. If agy built the change or is not available, the owner does a manual review.
+- The local agy review is `gates/cross_review.py` of `mohanraj00/.github` at the gate pin of the project. A project does not keep its own copy. Before the review, the tool sends one short prompt to agy with a time limit. If that call fails, times out or asks for a sign-in, the tool stops and sends no diff.
 - Ask one time for each head commit, and at most 3 times for each PR. The `gate` job of the Claude workflow stops a second Claude review of one kind for a head, and a Claude review after 3 of one kind.
 - The `cross-review` check fails if a PR has more than 3 `@codex review` requests from the owner login. The text is "Codex review cap reached. Examine the approach and report to the owner."
 - At the cap, stop the requests. Examine the approach, then report to the owner. The owner decides if more reviews are necessary. To permit more requests, the owner adds the `review-cap-lifted` label. The gate records the label for the current head and base, as for the other owner labels.
@@ -77,7 +78,10 @@ A Codex-built PR gets a Codex security review as an exception to the rule that a
 The agents use the owner login. An agent posts each review request in a PR comment.
 
 - A code review request is `@codex review`, with `Head: <short SHA>` on the next line. A security review request is a separate comment with the exact text `@codex security review`.
-- A Claude request is one of the two exact texts in `docs/REVIEW.md` of the project.
+- A Claude request is a comment with one of these two texts on its first line:
+  - code review: `@claude review this PR. Use the Review guidelines in AGENTS.md.`
+  - security review: `@claude do a security review of this PR. Use the Review guidelines in AGENTS.md.`
+- The gate job of the Claude workflow compares only the first line. It ignores the letter case, the white space at the two ends, and the length of each run of white space. The next lines can hold other text, for example `Head: <short SHA>`. A first line with other words, or with a word more or less, does not start a review.
 - For a fork PR, ask for a review only after the owner approval of stage 2.
 
 ## Security review trigger

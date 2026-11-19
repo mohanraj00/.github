@@ -18,6 +18,9 @@ outputs:
   summary:
     description: For security-review only. One line that tells if a security review is necessary, and why. The job summary also gets this line.
     value: ${{ steps.gate.outputs.summary }}
+  kind:
+    description: For claude-review only. code or security for a Claude review request, else empty. The first line of the comment decides.
+    value: ${{ steps.gate.outputs.kind }}
   reason:
     description: For claude-review only. The reason when the check stops the request.
     value: ${{ steps.gate.outputs.reason }}
