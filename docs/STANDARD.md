@@ -172,7 +172,7 @@ Each repository has the same 4 required checks:
 - The only bypass on `main` is the admin role, in PR-only mode. The owner uses it to merge a level 1 PR.
 - Each repository uses the groundgate tag ruleset.
 - Delete the branch after merge, and enable auto-merge after `cross-review` is required.
-- The up-to-date rule is off by default. koodam can keep it as a recorded exception, because of its generated files.
+- The up-to-date rule is off. No project has an exception. In koodam, a CI check of the generated files replaces the rule (mohanraj00/koodam#329).
 - After a revert, or a bug that passed all reviews, file an issue that names the layer that had to find it. Add a check, a test or a guideline line. If the reverts increase in a project, the owner can move all PRs of that project to level 1.
 
 The gates read a Codex result with these rules:
