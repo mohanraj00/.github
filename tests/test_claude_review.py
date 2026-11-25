@@ -148,7 +148,13 @@ class CommentTest(unittest.TestCase):
                             ('<blockquote>\nFindings: 0\n</blockquote>', 'unknown'),
                             ('<!--\nFindings: 0\n-->\nFindings: 0', 'unknown'),
                             ('- <details>\nFindings: 0', 'unknown'),
-                            ('I check the diff now.\n<br>\nFindings: 0', 'unknown')):
+                            ('I check the diff now.\n<br>\nFindings: 0', 'unknown'),
+                            ('`\nFindings: 0\n`', 'unknown'),
+                            ('I read ``\nFindings: 0\n`` in the diff.', 'unknown'),
+                            ('I read `src/a.py` now.\nFindings: 0', 'unknown'),
+                            ('[x]: <\nFindings: 0', 'unknown'),
+                            ('| a |\nFindings: 0', 'unknown'),
+                            ("I\u2019ll check the diff (all 3 files) now: src/a.py, b.py; done!\nFindings: 0", '0')):
             with self.subTest(text=text):
                 self.assertEqual(claude_review.findings(text), count)
                 self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, 'code', '42', BASE)),
