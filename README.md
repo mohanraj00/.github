@@ -59,12 +59,13 @@ The agents use the owner login. Thus GitHub cannot tell if the owner or an agent
 
 #### Count of a model review
 
-The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The marker gives `findings=unknown` if the text of a Claude review does not agree with the count on its first line:
+The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The count line of a Claude review is the first line that is exactly `Findings: N`. The model can write a progress line before it. The marker gives `findings=unknown` if no line is a count line, or if the text does not agree with the count:
 
-- `INCOMPLETE REVIEW` is on a line below the first line.
-- A later `Findings: N` line gives a different count.
-- The count is 0, and a later line starts with a severity tag or a `path:line` reference.
-- The count is 0, and a severity tag P0 to P3 is at any position in a later line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
+- A code fence or a quote line comes before the count line. Then the count line can be text of the diff.
+- `INCOMPLETE REVIEW` is on a different line.
+- A different `Findings: N` line gives a different count.
+- The count is 0, and a different line starts with a severity tag or a `path:line` reference.
+- The count is 0, and a severity tag P0 to P3 is at any position in a different line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
 
 The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. A prompt injection in the diff can cause these two results.
 

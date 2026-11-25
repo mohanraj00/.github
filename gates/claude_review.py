@@ -36,7 +36,7 @@ PROMPTS={
 FAILED='NO VALID CLAUDE REVIEW'
 # The comment when the gate job stops a request. It has no head, so it does not stop an older review of a head as FAILED does.
 STOPPED='The Claude review did not start.'
-# The gates accept only this marker, from the workflow bot. findings is unknown if the model text does not start with a valid count.
+# The gates accept only this marker, from the workflow bot. findings is unknown if no line of the model text is a valid count.
 # base is the merge base of the base branch and the head. The diff of the review starts at this commit, and the gates accept
 # the marker only if it is the current merge base. The gates do not accept a v1 marker, because it has no base.
 # run is the ID of the workflow run that posts the marker. The gates read this run from the API and accept the marker only
@@ -44,6 +44,7 @@ STOPPED='The Claude review did not start.'
 MARKER=re.compile(r'<!-- claude-review:v2 kind=(code|security) head=([0-9a-f]{40}) base=([0-9a-f]{40}) findings=(\d+|unknown) run=([1-9][0-9]{0,19}) -->')
 RUN=re.compile(r'[1-9][0-9]{0,19}')
 COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
+QUOTED=re.compile(r'[ \t]*(?:`{3}|~{3}|>)')
 # A line that starts with a severity tag P0 to P3 or a path:line reference is a finding.
 # A list marker, a heading mark, **, [ or ` can come first.
 # The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
@@ -102,14 +103,17 @@ def signal_text(text):
     return ''.join(c for c in unicodedata.normalize('NFKC',text) if unicodedata.category(c)!='Cf')
 
 def findings(text):
-    """Return the count from the first line of the model text, or unknown.
-    The result is unknown if the text does not agree with the count: INCOMPLETE REVIEW on a line, a second count line
-    with a different number, or, for a count of 0, a finding line or a severity tag below the first line."""
-    first,_,rest=text.strip().partition('\n')
-    found=COUNT.fullmatch(first.strip())
-    if not found:return 'unknown'
-    count=found.group(1)
-    rest=signal_text(rest)
+    """Return the count from the first line of the model text that is a count line, or unknown.
+    The model can write a progress line before the count line. The other lines, above and below the count line, must
+    agree with the count. The result is unknown if no line is a count line, if a code fence or a quote line comes before
+    the count line, or if one of the other lines has INCOMPLETE REVIEW, a count with a different number, or, for a count
+    of 0, a finding line or a severity tag."""
+    lines=text.strip().split('\n')
+    at=next((i for i,line in enumerate(lines) if COUNT.fullmatch(line.strip())),None)
+    # A count line after a code fence or a quote line can be quoted text from the diff, not the count of the model.
+    if at is None or any(QUOTED.match(signal_text(line)) for line in lines[:at]):return 'unknown'
+    count=COUNT.fullmatch(lines[at].strip()).group(1)
+    rest=signal_text('\n'.join(lines[:at]+lines[at+1:]))
     if INCOMPLETE.search(rest):return 'unknown'
     if any(int(n)!=int(count) for n in RECOUNT.findall(rest)):return 'unknown'
     if count=='0' and (FINDING.search(rest) or TAG.search(rest)):return 'unknown'
