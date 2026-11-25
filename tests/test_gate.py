@@ -1030,6 +1030,34 @@ class ClaudeRequestTest(unittest.TestCase):
         # The cap is for each kind.
         self.assertTrue(check('claude-review', Fake(comments=two + [marker('e' * 40)]), request('security'))[0])
 
+    def test_the_owner_label_lifts_the_claude_cap_for_one_head(self):
+        three = [marker(OLD), marker('d' * 40), marker('e' * 40)]
+        for kind in ('code', 'security'):
+            with self.subTest(kind=kind):
+                markers = [marker(h, kind=kind) for h in (OLD, 'd' * 40, 'e' * 40)]
+                fake = Fake(labels=[gate.CAP_LABEL], comments=markers + [record(gate.CAP_LABEL)])
+                passed, message, outputs = check('claude-review', fake, request(kind))
+                self.assertTrue(passed, message)
+                self.assertIn('The review-cap-lifted label applies to head %s, so the cap of 3 reviews does not apply.' % HEAD[:12], message)
+                self.assertEqual(outputs['head'], HEAD)
+        # The label does not lift the rule of one review for each head and merge base.
+        fake = Fake(labels=[gate.CAP_LABEL], comments=three + [marker(), record(gate.CAP_LABEL)])
+        passed, message, _ = check('claude-review', fake, request())
+        self.assertFalse(passed)
+        self.assertIn('A trusted Claude code review of head %s on the current merge base is on the PR.' % HEAD[:12], message)
+        # Without a record for the current head and base, or without an admin label, the cap applies.
+        for fake in (Fake(comments=three + [record(gate.CAP_LABEL)]),
+                     Fake(labels=[gate.CAP_LABEL], comments=three + [record(gate.CAP_LABEL, head=OLD)]),
+                     Fake(labels=[gate.CAP_LABEL], comments=three + [record(gate.CAP_LABEL, base='dev')]),
+                     Fake(labels=[gate.CAP_LABEL], comments=three + [record(gate.CAP_LABEL)],
+                          labeled={gate.CAP_LABEL: ('triage-user', '2026-11-07T09:00:00Z')}),
+                     Fake(labels=[gate.CAP_LABEL], comments=three + [comment('mohanraj00', gate.record_body(gate.CAP_LABEL, HEAD, 'main'))])):
+            with self.subTest(labels=fake.state['labels'], comments=fake.comment_list[3:], labeled=fake.labeled):
+                passed, message, _ = check('claude-review', fake, request())
+                self.assertFalse(passed)
+                self.assertIn('The PR has 3 trusted Claude code reviews. The cap is 3 for each PR.', message)
+                self.assertEqual(fake.removed, [])  # The gate job has read permissions only.
+
     def test_the_request_text_selects_the_kind(self):
         self.assertIn('security review', check('claude-review', Fake(), request(body=gate.CLAUDE_REQUESTS['security'].upper()))[1])
 

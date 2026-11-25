@@ -1,6 +1,6 @@
 # Project standard
 
-Version: 6
+Version: 7
 
 ## Documents
 
@@ -48,7 +48,7 @@ The gates do not protect against an actor with write access. That actor uses the
 - The local agy review is `gates/cross_review.py` of `mohanraj00/.github` at the gate pin of the project. A project does not keep its own copy. Before the review, the tool sends one short prompt to agy with a time limit. If that call fails, times out or asks for a sign-in, the tool stops and sends no diff.
 - Ask one time for each head commit, and at most 3 times for each PR. The `gate` job of the Claude workflow stops a second Claude review of one kind for a head, and a Claude review after 3 of one kind.
 - The `cross-review` check fails if a PR has more than 3 `@codex review` requests from the owner login. The text is "Codex review cap reached. Examine the approach and report to the owner."
-- At the cap, stop the requests. Examine the approach, then report to the owner. The owner decides if more reviews are necessary. To permit more requests, the owner adds the `review-cap-lifted` label. The gate records the label for the current head and base, as for the other owner labels.
+- At the cap, stop the requests. Examine the approach, then report to the owner. The owner decides if more reviews are necessary. To permit more requests, the owner adds the `review-cap-lifted` label. The label lifts the cap of `@codex review` requests and the cap of 3 Claude reviews of each kind. The gate records the label for the current head and base, as for the other owner labels. The rule of one request for each head commit still applies.
 - When a finding shows a class of problem, fix all instances of the class in the same commit.
 - Do not make a commit only for a nit. Close the thread with a reason.
 - If a finding is about code that the PR did not change, file an issue. It does not block the PR.
