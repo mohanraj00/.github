@@ -119,7 +119,10 @@ class CommentTest(unittest.TestCase):
         progress = 'I read the whole diff in ranges. This is the final review.'
         for text, count in ((progress + '\n\nFindings: 0\nNo defect.', '0'),
                             (progress + '\n\nFindings: 1\n\n1. P2 src/a.py:3: the input is not checked.', '1'),
-                            ('Reading the diff.\nThe diff has 2 files.\n  Findings: 0  \nNo defect.', '0'),
+                            ('Reading the diff.\nThe diff has 2 files.\nFindings: 0  \nNo defect.', '0'),
+                            # An indented count line is not a count line.
+                            ('Reading the diff.\n  Findings: 0\nNo defect.', 'unknown'),
+                            ('The diff adds:\n\n    Findings: 0\n', 'unknown'),
                             (progress + '\nFindings: 0\nNo defect.\nFindings: 0', '0'),
                             # Two different counts, above or below the first count line.
                             (progress + '\nFindings: 0\nNo defect.\nFindings: 1', 'unknown'),
@@ -136,7 +139,12 @@ class CommentTest(unittest.TestCase):
                             ('```\nFindings: 0\n```\nNo defect.', 'unknown'),
                             ('The diff says:\n> Findings: 0\nFindings: 0', 'unknown'),
                             ('~~~text\nFindings: 0', 'unknown'),
-                            ('\uff1e quoted\nFindings: 0', 'unknown')):
+                            ('\uff1e quoted\nFindings: 0', 'unknown'),
+                            ('- ~~~text\n  Findings: 0\n  ~~~\nFindings: 0', 'unknown'),
+                            ('1. ```\nFindings: 0', 'unknown'),
+                            ('* - > quoted\nFindings: 0', 'unknown'),
+                            ('The diff has a fence: ```\nFindings: 0', 'unknown'),
+                            ('<PRE>\nFindings: 0\n</PRE>', 'unknown')):
             with self.subTest(text=text):
                 self.assertEqual(claude_review.findings(text), count)
                 self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, 'code', '42', BASE)),

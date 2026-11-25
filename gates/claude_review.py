@@ -44,7 +44,8 @@ STOPPED='The Claude review did not start.'
 MARKER=re.compile(r'<!-- claude-review:v2 kind=(code|security) head=([0-9a-f]{40}) base=([0-9a-f]{40}) findings=(\d+|unknown) run=([1-9][0-9]{0,19}) -->')
 RUN=re.compile(r'[1-9][0-9]{0,19}')
 COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
-QUOTED=re.compile(r'[ \t]*(?:`{3}|~{3}|>)')
+# A code fence at any position in a line, an HTML pre tag, or a quote line, also after list markers, is quoted text.
+QUOTED=re.compile(r'`{3}|~{3}|<pre\b|^[ \t]*(?:(?:[-*+]|\d{1,3}[.)])[ \t]+)*>',re.I)
 # A line that starts with a severity tag P0 to P3 or a path:line reference is a finding.
 # A list marker, a heading mark, **, [ or ` can come first.
 # The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
@@ -105,14 +106,16 @@ def signal_text(text):
 def findings(text):
     """Return the count from the first line of the model text that is a count line, or unknown.
     The model can write a progress line before the count line. The other lines, above and below the count line, must
-    agree with the count. The result is unknown if no line is a count line, if a code fence or a quote line comes before
+    agree with the count. The count line has no indent. The result is unknown if no line is a count line, if a code fence,
+    an HTML pre tag or a quote line comes before
     the count line, or if one of the other lines has INCOMPLETE REVIEW, a count with a different number, or, for a count
     of 0, a finding line or a severity tag."""
     lines=text.strip().split('\n')
-    at=next((i for i,line in enumerate(lines) if COUNT.fullmatch(line.strip())),None)
+    # The count line has no indent, so an indented code block or the body of a list item is not a count line.
+    at=next((i for i,line in enumerate(lines) if COUNT.fullmatch(line.rstrip())),None)
     # A count line after a code fence or a quote line can be quoted text from the diff, not the count of the model.
-    if at is None or any(QUOTED.match(signal_text(line)) for line in lines[:at]):return 'unknown'
-    count=COUNT.fullmatch(lines[at].strip()).group(1)
+    if at is None or any(QUOTED.search(signal_text(line)) for line in lines[:at]):return 'unknown'
+    count=COUNT.fullmatch(lines[at].rstrip()).group(1)
     rest=signal_text('\n'.join(lines[:at]+lines[at+1:]))
     if INCOMPLETE.search(rest):return 'unknown'
     if any(int(n)!=int(count) for n in RECOUNT.findall(rest)):return 'unknown'
