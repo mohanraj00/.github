@@ -47,10 +47,16 @@ COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
 # A line before the count line must be plain prose. Markdown and HTML have many forms of quoted text: code fences,
 # code spans, quote lines, HTML tags and comments. A list of forms to refuse misses a form, so the gate permits only
 # these characters. A line with a different character gives unknown, also if the text is not quoted.
-PLAIN=re.compile(r"[A-Za-z0-9 \t.,:;'\u2019\"()/?!%+@-]*")
+# A double quote is not permitted, because prose can quote the count line between two double quotes.
+PLAIN=re.compile(r"[A-Za-z0-9 \t.,:;'\u2019()/?!%+@-]*")
+# An apostrophe is permitted only in a word, for example I'll. An apostrophe at a different position can be a quote mark.
+APOSTROPHE=re.compile(r"(?<![A-Za-z])['\u2019]|['\u2019](?![A-Za-z])")
 # A list item before the count line can contain the count line as a lazy continuation, so a list marker gives unknown.
 # The other containers start with *, > or #, and PLAIN does not permit these characters.
 LIST=re.compile(r'[ \t]*(?:[-+]|\d{1,9}[.)])(?:[ \t]|$)')
+# The last text line before the count line must end a sentence. A line that ends with a colon or with no mark can
+# introduce the count line as a quote.
+SENTENCE=re.compile(r'[.!?][ \t]*')
 # A line that starts with a severity tag P0 to P3 or a path:line reference is a finding.
 # A list marker, a heading mark, **, [ or ` can come first.
 # The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
@@ -108,17 +114,24 @@ def signal_text(text):
     """Return the text in NFKC form with no format characters, so that a full-width or a zero-width character cannot hide a signal."""
     return ''.join(c for c in unicodedata.normalize('NFKC',text) if unicodedata.category(c)!='Cf')
 
+def prose(lines):
+    """Return True if the lines are plain prose that ends a sentence. These lines cannot quote the next line."""
+    lines=[signal_text(line) for line in lines]
+    if any(not PLAIN.fullmatch(line) or APOSTROPHE.search(line) or LIST.match(line) for line in lines):return False
+    text=[line.rstrip() for line in lines if line.strip()]
+    return not text or bool(SENTENCE.search(text[-1][-1:]))
+
 def findings(text):
     """Return the count from the first line of the model text that is a count line, or unknown.
     The model can write a progress line before the count line. The other lines, above and below the count line, must
     agree with the count. The count line has no indent. The result is unknown if no line is a count line, if a line
-    before the count line has a character that is not in PLAIN or starts with a list marker, or if one of the other lines has INCOMPLETE REVIEW, a count with a different number, or, for a count
+    before the count line is not prose (see prose), or if one of the other lines has INCOMPLETE REVIEW, a count with a different number, or, for a count
     of 0, a finding line or a severity tag."""
     lines=text.strip().split('\n')
     # The count line has no indent, so an indented code block or the body of a list item is not a count line.
     at=next((i for i,line in enumerate(lines) if COUNT.fullmatch(line.rstrip())),None)
     # A count line after quoted text can be text from the diff, not the count of the model.
-    if at is None or not all(PLAIN.fullmatch(signal_text(line)) and not LIST.match(signal_text(line)) for line in lines[:at]):return 'unknown'
+    if at is None or not prose(lines[:at]):return 'unknown'
     count=COUNT.fullmatch(lines[at].rstrip()).group(1)
     rest=signal_text('\n'.join(lines[:at]+lines[at+1:]))
     if INCOMPLETE.search(rest):return 'unknown'
