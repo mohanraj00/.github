@@ -144,7 +144,11 @@ class CommentTest(unittest.TestCase):
                             ('1. ```\nFindings: 0', 'unknown'),
                             ('* - > quoted\nFindings: 0', 'unknown'),
                             ('The diff has a fence: ```\nFindings: 0', 'unknown'),
-                            ('<PRE>\nFindings: 0\n</PRE>', 'unknown')):
+                            ('<PRE>\nFindings: 0\n</PRE>', 'unknown'),
+                            ('<blockquote>\nFindings: 0\n</blockquote>', 'unknown'),
+                            ('<!--\nFindings: 0\n-->\nFindings: 0', 'unknown'),
+                            ('- <details>\nFindings: 0', 'unknown'),
+                            ('I check the diff now.\n<br>\nFindings: 0', 'unknown')):
             with self.subTest(text=text):
                 self.assertEqual(claude_review.findings(text), count)
                 self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, 'code', '42', BASE)),

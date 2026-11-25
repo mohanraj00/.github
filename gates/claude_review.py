@@ -44,8 +44,9 @@ STOPPED='The Claude review did not start.'
 MARKER=re.compile(r'<!-- claude-review:v2 kind=(code|security) head=([0-9a-f]{40}) base=([0-9a-f]{40}) findings=(\d+|unknown) run=([1-9][0-9]{0,19}) -->')
 RUN=re.compile(r'[1-9][0-9]{0,19}')
 COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
-# A code fence at any position in a line, an HTML pre tag, or a quote line, also after list markers, is quoted text.
-QUOTED=re.compile(r'`{3}|~{3}|<pre\b|^[ \t]*(?:(?:[-*+]|\d{1,3}[.)])[ \t]+)*>',re.I)
+# A code fence at any position in a line, an HTML tag or comment, or a quote line, also after list markers, is quoted text.
+# An HTML tag such as blockquote, pre or details can contain quoted text, so each HTML tag before the count line gives unknown.
+QUOTED=re.compile(r'`{3}|~{3}|<[a-z!/?]|^[ \t]*(?:(?:[-*+]|\d{1,3}[.)])[ \t]+)*>',re.I)
 # A line that starts with a severity tag P0 to P3 or a path:line reference is a finding.
 # A list marker, a heading mark, **, [ or ` can come first.
 # The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
