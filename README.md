@@ -62,6 +62,7 @@ The agents use the owner login. Thus GitHub cannot tell if the owner or an agent
 The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The count line of a Claude review is the first line that is exactly `Findings: N`, with no indent. The model can write a progress line before it. The marker gives `findings=unknown` if no line is a count line, or if the text does not agree with the count:
 
 - A line before the count line has a character that is not plain prose. The permitted characters are letters, digits, spaces and `.,:;'’"()/?!%+@-`. Markdown and HTML have many forms of quoted text, for example code fences, code spans, quote lines and HTML tags. A list of forms to refuse can miss a form, so the gate permits only these characters. A backtick, `<`, `>`, `~`, `[` or `|` before the count line thus gives `findings=unknown`.
+- A line before the count line starts with a list marker (`-`, `+`, or a number and `.` or `)`). The count line can then be a lazy continuation of that list item.
 - `INCOMPLETE REVIEW` is on a different line.
 - A different `Findings: N` line gives a different count.
 - The count is 0, and a different line starts with a severity tag or a `path:line` reference.

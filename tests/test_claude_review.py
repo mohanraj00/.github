@@ -154,6 +154,12 @@ class CommentTest(unittest.TestCase):
                             ('I read `src/a.py` now.\nFindings: 0', 'unknown'),
                             ('[x]: <\nFindings: 0', 'unknown'),
                             ('| a |\nFindings: 0', 'unknown'),
+                            ('- Quoted review follows\nFindings: 0', 'unknown'),
+                            ('+ Quoted review follows\n\nFindings: 0', 'unknown'),
+                            ('12) Quoted review follows\nFindings: 0', 'unknown'),
+                            ('  1. Quoted\nFindings: 0', 'unknown'),
+                            ('-\nFindings: 0', 'unknown'),
+                            ('The diff has -3 lines and 1.5 files.\nFindings: 0', '0'),
                             ("I\u2019ll check the diff (all 3 files) now: src/a.py, b.py; done!\nFindings: 0", '0')):
             with self.subTest(text=text):
                 self.assertEqual(claude_review.findings(text), count)
