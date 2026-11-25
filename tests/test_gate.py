@@ -159,7 +159,7 @@ class Fake:
 
     def post_comment(self, body):
         self.posted.append(body)
-        self.comment_list.append(comment(gate.BOT, body, '2026-11-07T12:00:00Z'))
+        self.comment_list.append(comment(gate.BOT, body, self.clock.strftime('%Y-%m-%dT%H:%M:%SZ')))
 
     def remove_label(self, label):
         self.removed.append(label)
@@ -183,6 +183,10 @@ def event(action='opened', label=None, head=HEAD, sender='mohanraj00'):
 def check(name, fake, ev=None):
     passed, lines, outputs = gate.run(name, fake, ev or event(), CONFIG, TEMPLATE)
     return passed, '\n'.join(lines), outputs
+
+
+# More than gate.PENDING seconds after each labeled time of these tests.
+LATE = '2026-11-07T18:00:00Z'
 
 
 def record(label, head=HEAD, base='main'):
@@ -357,7 +361,8 @@ class SecurityTest(unittest.TestCase):
         for comments in ([], [record('security-reviewed', base='dev')], [record('cross-reviewed')],
                          [comment('mohanraj00', gate.record_body('security-reviewed', HEAD, 'main'))]):
             with self.subTest(comments=comments):
-                fake = Fake(files=['src/a.py'], labels=['security-reviewed'], comments=comments)
+                # LATE is after the pending time, so the run of the labeled event is not in the queue now.
+                fake = Fake(files=['src/a.py'], labels=['security-reviewed'], comments=comments, now=LATE)
                 passed, message, _ = check('security-review', fake)
                 self.assertFalse(passed)
                 self.assertEqual(fake.removed, ['security-reviewed'])
@@ -384,11 +389,11 @@ class SecurityTest(unittest.TestCase):
         for actor, at in (('triage-user', '2026-11-07T11:00:00Z'), ('mohanraj00', '2026-11-07T11:00:00Z')):
             with self.subTest(actor=actor):
                 fake = Fake(files=['src/a.py'], labels=['security-reviewed'], comments=[record('security-reviewed')],
-                            labeled={'security-reviewed': (actor, at)})
+                            labeled={'security-reviewed': (actor, at)}, now=LATE)
                 self.assertFalse(check('security-review', fake)[0])
                 self.assertEqual(fake.removed, ['security-reviewed'])
                 fake = Fake(ref='agy/7', issues=[], labels=['cross-reviewed'], comments=[record('cross-reviewed')],
-                            labeled={'cross-reviewed': (actor, at)})
+                            labeled={'cross-reviewed': (actor, at)}, now=LATE)
                 self.assertFalse(check('cross-review', fake)[0])
 
     def test_a_run_waits_for_the_record_of_a_recent_label_and_does_not_remove_it(self):
@@ -421,7 +426,8 @@ class SecurityTest(unittest.TestCase):
     def test_a_label_from_a_user_who_is_not_an_admin_makes_no_record(self):
         for sender in ('triage-user', ''):
             with self.subTest(sender=sender):
-                fake = Fake(files=['src/a.py'], labels=['security-reviewed'])
+                # The labeled event of the PR names the same user as the event, and the run is recent.
+                fake = Fake(files=['src/a.py'], labels=['security-reviewed'], labeled={'security-reviewed': (sender, '2026-11-07T12:59:00Z')})
                 self.assertFalse(check('security-review', fake, event('labeled', 'security-reviewed', sender=sender))[0])
                 self.assertEqual((fake.posted, fake.removed), ([], ['security-reviewed']))
         fake = Fake(ref='agy/7', issues=[], labels=['cross-reviewed'])
@@ -839,6 +845,51 @@ class CrossReviewTest(unittest.TestCase):
         fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(4) + [comment(gate.CODEX, state())])
         self.assertFalse(check('cross-review', fake, event('labeled', label=gate.CAP_LABEL, sender='someone'))[0])
         self.assertEqual(fake.posted, [])
+
+    def test_a_delayed_record_run_does_not_cancel_the_owner_label(self):
+        # The owner adds the label at 18:00:53. The queue delays the run of the labeled event by 40 minutes.
+        labeled = {gate.CAP_LABEL: ('mohanraj00', '2026-11-07T18:00:53Z')}
+        comments = self.requests(4) + [comment(gate.CODEX, state())]
+        for now in ('2026-11-07T18:14:10Z', '2026-11-07T18:40:00Z'):
+            with self.subTest(now=now):
+                fake = Fake(labels=[gate.CAP_LABEL], comments=list(comments), labeled=labeled, now=now)
+                passed, message, _ = check('cross-review', fake)
+                self.assertFalse(passed)  # A pending label is not an approval.
+                self.assertEqual((fake.removed, fake.slept), ([], 0))
+                self.assertIn('The review-cap-lifted label has no approval record yet.', message)
+        fake = Fake(labels=[gate.CAP_LABEL], comments=list(comments), labeled=labeled, now='2026-11-07T18:41:00Z')
+        passed, message, _ = check('cross-review', fake, event('labeled', label=gate.CAP_LABEL))
+        self.assertTrue(passed, message)
+        self.assertEqual((fake.posted, fake.removed), ([gate.record_body(gate.CAP_LABEL, HEAD, 'main')], []))
+
+    def test_a_pending_label_has_a_fixed_upper_limit(self):
+        labeled = {gate.CAP_LABEL: ('mohanraj00', '2026-11-07T09:00:00Z')}
+        comments = self.requests(4) + [comment(gate.CODEX, state())]
+        for now, removed in (('2026-11-07T14:59:59Z', []), ('2026-11-07T15:00:00Z', [gate.CAP_LABEL])):
+            with self.subTest(now=now):
+                fake = Fake(labels=[gate.CAP_LABEL], comments=list(comments), labeled=labeled, now=now)
+                self.assertFalse(check('cross-review', fake)[0])
+                self.assertEqual(fake.removed, removed)
+
+    def test_a_delayed_label_from_a_user_who_is_not_an_admin_is_refused(self):
+        labeled = {gate.CAP_LABEL: ('triage-user', '2026-11-07T12:30:00Z')}
+        fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(4) + [comment(gate.CODEX, state())], labeled=labeled)
+        self.assertFalse(check('cross-review', fake)[0])
+        self.assertEqual(fake.removed, [gate.CAP_LABEL])
+        fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(4) + [comment(gate.CODEX, state())], labeled=labeled)
+        self.assertFalse(check('cross-review', fake, event('labeled', label=gate.CAP_LABEL, sender='triage-user'))[0])
+        self.assertEqual((fake.posted, fake.removed), ([], [gate.CAP_LABEL]))
+
+    def test_a_newer_record_for_a_different_head_or_base_makes_the_label_stale(self):
+        labeled = {gate.CAP_LABEL: ('mohanraj00', '2026-11-07T12:30:00Z')}
+        for other in (record(gate.CAP_LABEL, head=OLD), record(gate.CAP_LABEL, base='dev')):
+            with self.subTest(record=other['body']):
+                fake = Fake(labels=[gate.CAP_LABEL], comments=self.requests(4) + [comment(gate.CODEX, state()),
+                            other | {'created_at': '2026-11-07T12:31:00Z'}], labeled=labeled)
+                passed, message, _ = check('cross-review', fake)
+                self.assertFalse(passed)
+                self.assertEqual(fake.removed, [gate.CAP_LABEL])
+                self.assertIn('no approval record for head', message)
 
     def test_the_cross_reviewed_label_still_passes_at_the_cap(self):
         fake = Fake(labels=['cross-reviewed'], comments=self.requests(4) + [record('cross-reviewed')])
