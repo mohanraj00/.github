@@ -660,14 +660,20 @@ class DocstringCheckTest(unittest.TestCase):
         bare_old, bare_new = STORE_OLD.split(b'\n', 1)[1], STORE_DOCS.split(b'\n', 1)[1]
         executable = {(TIP, STORE): '100755', (MERGE, STORE): '100755'}
         cases = {'shell line': (b'#!/bin/sh\n' + bare_old, b'#!/bin/sh\n' + bare_new, {}),
-                 'executable with no line': (bare_old, bare_new, executable)}
+                 'executable with no line': (bare_old, bare_new, executable),
+                 'env split': (b"#!/usr/bin/env -S sh -c 'sh \"$1\"' python\n" + bare_old,
+                               b"#!/usr/bin/env -S sh -c 'sh \"$1\"' python\n" + bare_new, executable),
+                 'python in a path': (b'#!/bin/sh /opt/python\n' + bare_old, b'#!/bin/sh /opt/python\n' + bare_new, {}),
+                 'command flag': (b'#!/usr/bin/python3 -c\n' + bare_old, b'#!/usr/bin/python3 -c\n' + bare_new, {})}
         for name, (old, new, modes) in cases.items():
             with self.subTest(name):
                 passed, message, _ = self.run_check(old=old, new=new, modes=modes)
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: src/auth/store.py can run as a program that is not Python.', message)
-        passed, message, _ = self.run_check(modes=executable)
-        self.assertTrue(passed, message)
+        for line in (b'#!/usr/bin/env python3\n', b'#! /usr/bin/python3.12 -u\n', b'#!/usr/local/bin/python\n'):
+            with self.subTest(line=line):
+                passed, message, _ = self.run_check(old=line + bare_old, new=line + bare_new, modes=executable)
+                self.assertTrue(passed, message)
 
     def test_a_source_encoding_that_is_not_utf8_needs_a_review(self):
         for cookie in (b'# -*- coding: unicode_escape -*-\n', b'# -*- coding: latin-1 -*-\n'):

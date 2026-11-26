@@ -97,8 +97,10 @@ DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get
 # The signatures of a zip file, at any place, and of other compressed files, at the start.
 ZIP = re.compile(rb'PK\x03\x04|PK\x05\x06|PK\x06\x06')
 COMPRESSED = (b'\x1f\x8b', b'BZh', b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b"7z\xbc\xaf\x27\x1c")
-# A file with one of these extensions, or with a #! line that names python, is Python.
-PYTHON = re.compile(rb'#![^\n]*python')
+# A file with one of these extensions, or with a #! line of Python, is Python. The #! line must run Python directly: a
+# path to python, or /usr/bin/env and python, and one optional group of flags with no argument. A line such as
+# '#!/usr/bin/env -S sh -c ... python' names python, but it runs a shell, so it does not match.
+PYTHON = re.compile(rb'#! ?(?:/usr/bin/env +|(?:/[\w.+-]+)+/)python[0-9.]*(?: -[BdEIOPqsSuv]+)? *(?:\n|\Z)')
 # Python and a shell run a file with each name, so the gate reads each doc and each config.
 # These files name paths. The project config names its boundary files. If such a file parses as Python, it can have only
 # literal values, for example JSON.
