@@ -62,24 +62,18 @@ COPIES = {'docs/STANDARD.md': 'docs/STANDARD.md', 'tools/claude_review.py': 'gat
 DEPENDABOT = 'dependabot[bot]'
 USES = re.compile(rb'(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@([0-9a-f]{40}) # (v?[0-9][0-9A-Za-z.+-]*)(\r?\n)?')
 PIN_FILE = '.github/workflows/gates.yml'
-# A listed .py file that changes only comments and docstrings needs no security review. The gate reads the head tree from
+# A listed .py file that changes only the text of its docstrings needs no security review. The gate reads the head tree from
 # the tarball and stops at these limits. A larger tree needs a review.
 TARBALL_BYTES = 64 * 1024 * 1024
 TREE_BYTES = 256 * 1024 * 1024
 TREE_FILES = 20000
-# A docstring is code if a file of the head tree reads it. A .py file that names one of these reads docstrings, source
-# lines or comments, or makes the help text of a command from the docstrings.
-DOC_NAMES = {'getdoc', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'linecache', 'pydoc', 'doctest',
-             'click', 'typer', 'fire'}
+# A docstring is code if a file of the head tree reads it. A .py file that names one of these reads docstrings or source
+# files, or makes the help text of a command from the docstrings.
+DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'getsourcefile', 'getfile',
+             'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click', 'typer', 'fire'}
 # In a file that is not Python and not a doc, these words can read a docstring, for example "pytest --doctest-modules".
 DOC_WORDS = re.compile(rb'__doc__|getdoc|pydoc|doctest')
 DOC_TEXT = ('.md', '.rst', '.txt')
-# A comment on a line with code must not change, because a tool can read each such comment, for example "# nosec".
-# A comment on its own line can change only if it does not name a tool. These words name the usual tools. A word and a
-# colon, as in "pylint: disable" or "type: ignore", or a word and a bracket, as in "lgtm[py/x]", also names a tool.
-DIRECTIVE = re.compile(r'(?i)\b(?:no[a-z]*(?:qa|sec|semgrep|sonar|lint|cover|check|inspection)|skipcq|lgtm|codeql|pragma|pyre-?[a-z]*|'
-                       r'pytype|fmt|isort|type|mypy|pylint|pyright|ruff|flake8|coverage|bandit|semgrep|bearer|snyk|ignore)\b'
-                       r'|\w\s*:\s*\S|\w\[')
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
@@ -781,35 +775,24 @@ def docstring_starts(tree):
     return found
 
 
-def tool_lines(data):
-    """Return the lines that a tool can read outside of the tree. The first item is the start line #!. Then each line
-    with code gives its code tokens and its comment, in order. A line with only a comment that names a tool is an item
-    too. A line with a tool comment also gives the next line. Thus a comment on code cannot change or move, a tool
-    comment cannot move, and a line break in the code cannot move."""
-    first = data.split(b'\n', 1)[0]
+def tokens_without_docstrings(data):
+    """Return the tokens of the Python source, with a mark in place of each docstring. Thus each comment, each line
+    break and each token must stay the same, and only the text of an existing docstring can change. A tool can read a
+    comment, for example "# nosec" or a "# /// script" block, so no comment can change."""
     docs = docstring_starts(ast.parse(data))
-    rows = {}
+    found = []
     for token in tokenize.tokenize(io.BytesIO(data).readline):
-        if token.type in (tokenize.ENCODING, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER):
-            continue
         # The ast column counts UTF-8 bytes. The token column counts characters.
         if token.type == tokenize.STRING and (token.start[0], len(token.line[:token.start[1]].encode())) in docs:
-            continue
-        rows.setdefault(token.start[0], []).append((token.type, token.string))
-    # A tool comment can apply to the next line, as "# nosemgrep" does. Thus a line with a tool comment also gives the
-    # exact next line, so a removed docstring or blank line cannot move the comment to other code.
-    lines, found = data.split(b'\n'), []
-    for row in sorted(rows):
-        tokens = rows[row]
-        tool = any(kind == tokenize.COMMENT and DIRECTIVE.search(text) for kind, text in tokens)
-        if tool or any(kind != tokenize.COMMENT for kind, _ in tokens):
-            found.append(tuple(tokens) + ((lines[row] if row < len(lines) else b''),) * tool)
-    return [first if first.startswith(b'#!') else b''] + found
+            found.append((tokenize.STRING, None))
+        else:
+            found.append((token.type, token.string))
+    return found
 
 
-def doc_reader(path, data, changed):
-    """Return the reason if the file can read a docstring, else None. A bare __doc__ reads the docstrings of its own
-    module only, so it counts only in a changed file."""
+def doc_reader(path, data, changed, files):
+    """Return the reason if the file can read a docstring, else None. A bare __doc__ or __file__ names its own module
+    only, so it counts only in a changed file. A string that ends with the name of a changed file can open it."""
     if not path.endswith('.py'):
         return 'names a docstring reader' if not path.endswith(DOC_TEXT) and DOC_WORDS.search(data) else None
     try:
@@ -825,6 +808,12 @@ def doc_reader(path, data, changed):
             return 'imports __doc__ of a module'
         if isinstance(node, ast.Name) and node.id == '__doc__' and changed:
             return 'reads its own __doc__'
+        if isinstance(node, ast.Name) and node.id == '__file__' and changed:
+            return 'names its own source file'
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            text = node.value if isinstance(node.value, str) else node.value.decode('latin-1')
+            if any(text.endswith(x) for x in files):
+                return 'names the file %s' % show(text)
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [x.name for x in node.names] if isinstance(node, ast.Import)
                  else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
@@ -835,7 +824,7 @@ def doc_reader(path, data, changed):
 
 
 def docstring_check(gh, pr, listed, files):
-    """Return (proved lines, None) if each listed path is a .py file that changes only comments and docstrings, else
+    """Return (proved lines, None) if each listed path is a .py file that changes only the text of its docstrings, else
     (None, reason). The file keeps its path. The tree of the base and the head are equal after the docstrings go.
     No file of the head tree reads a docstring."""
     head, base = pr['head']['sha'], pr['base']['sha']
@@ -852,18 +841,19 @@ def docstring_check(gh, pr, listed, files):
             return None, 'Cannot read %s at the base or the head.' % show(path)
         try:
             same = code_tree(before[1]) == code_tree(after[1])
-            tools = tool_lines(before[1]) == tool_lines(after[1])
+            tokens = tokens_without_docstrings(before[1]) == tokens_without_docstrings(after[1])
         except (SyntaxError, ValueError, RecursionError, MemoryError, tokenize.TokenError) as error:
             return None, '%s does not parse at the base or the head (%s).' % (show(path), type(error).__name__)
         if not same:
-            return None, '%s changes code, not only comments and docstrings.' % show(path)
-        if not tools:
-            return None, '%s changes the #! line, a comment on code, a tool comment, or the line breaks of the code.' % show(path)
-        proved.append('%s: only comments and docstrings change.' % show(path))
+            return None, '%s changes code, not only docstrings.' % show(path)
+        if not tokens:
+            return None, '%s changes a comment, a line break or a token, or adds or removes a docstring.' % show(path)
+        proved.append('%s: only the text of docstrings changes.' % show(path))
     if not proved:
         return None, 'No listed path changed.'
+    basenames = {posixpath.basename(x) for x in listed}
     for path, data in sorted(gh.tree_files(head).items()):
-        reason = doc_reader(path, data, path in listed)
+        reason = doc_reader(path, data, path in listed, basenames)
         if reason:
             return None, '%s %s, so a docstring can be code.' % (show(path), reason)
     return proved, None
@@ -898,14 +888,14 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
             return (True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, [],
                     'Security review: not needed. Each listed path is a proved copy or pin change.')
         lines.append('Copy check: ' + reason)
-        # A change of only comments and docstrings in listed .py files needs no review. The code tree does not change.
+        # A change of only the docstring text in listed .py files needs no review. The code does not change.
         try:
             proved, reason = docstring_check(gh, pr, listed, files)
         except (OSError, GateError, KeyError, TypeError, ValueError, tarfile.TarError) as error:
             proved, reason = None, 'The docstring check failed closed (%s: %s).' % (type(error).__name__, show(error))
         if proved:
-            return (True, ['Each listed path changes only comments and docstrings. No review is necessary.'] + proved, [],
-                    'Security review: not needed. Only comments and docstrings changed in a listed path.')
+            return (True, ['Each listed path changes only the text of docstrings. No review is necessary.'] + proved, [],
+                    'Security review: not needed. Only docstrings changed in a listed path.')
         lines.append('Docstring check: ' + reason)
     if not complete:
         lines.append('The PR has more files than GitHub lists, so the change is security relevant.')

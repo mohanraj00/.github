@@ -566,8 +566,8 @@ class Store:
         """Return the rows."""
         return self.data[:n]
 '''
-STORE_DOCS = STORE_OLD.replace(b'Return the rows.', b'Return the rows of the open snapshot.').replace(
-    b'        return', b'        # The open snapshot only.\n        return')
+STORE_DOCS = STORE_OLD.replace(b'Return the rows.', b'Return the rows of the open snapshot.\n\n        The rows are a list.')
+TOKENS = 'src/auth/store.py changes a comment, a line break or a token, or adds or removes a docstring.'
 
 
 class DocstringCheckTest(unittest.TestCase):
@@ -580,60 +580,39 @@ class DocstringCheckTest(unittest.TestCase):
     def test_a_docstring_only_change_passes_with_no_review(self):
         passed, message, output = self.run_check()
         self.assertTrue(passed, message)
-        self.assertIn('Each listed path changes only comments and docstrings. No review is necessary.', message)
-        self.assertIn('src/auth/store.py: only comments and docstrings change.', message)
-        self.assertEqual(output, {'summary': 'Security review: not needed. Only comments and docstrings changed in a listed path.'})
-
-    def test_a_comment_only_change_passes_with_no_review(self):
-        new = STORE_OLD.replace(b'class Store:', b'# The store of the rows. It is not open now.\n\n# One class.\nclass Store:')
-        passed, message, _ = self.run_check(new=new)
-        self.assertTrue(passed, message)
-
-    def test_a_comment_on_code_or_a_tool_comment_needs_a_review(self):
-        old = b'import subprocess\n# The command.\nsubprocess.run(command, shell=True)  # Run it.\n'
-        cases = {'comment on code': old.replace(b'# Run it.', b'# Run the command.'),
-                 'nosemgrep on code': old.replace(b'# Run it.', b'# Run it. nosemgrep'),
-                 'nosemgrep line': old.replace(b'# The command.', b'# nosemgrep: python.lang.security'),
-                 'tool with a colon': old.replace(b'# The command.', b'# pylint: disable-next=all'),
-                 'tool with a bracket': old.replace(b'# The command.', b'# lgtm[py/command-line-injection]'),
-                 'unknown tool word': old.replace(b'# The command.', b'# NOSONAR')}
-        for name, new in cases.items():
-            with self.subTest(name):
-                passed, message, _ = self.run_check(old=old, new=new)
-                self.assertFalse(passed)
-                self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment', message)
+        self.assertIn('Each listed path changes only the text of docstrings. No review is necessary.', message)
+        self.assertIn('src/auth/store.py: only the text of docstrings changes.', message)
+        self.assertEqual(output, {'summary': 'Security review: not needed. Only docstrings changed in a listed path.'})
 
     def test_a_docstring_after_code_on_its_line_passes(self):
         old = 'def f(x="é"): "Doc."\n'.encode()
         passed, message, _ = self.run_check(old=old, new=old.replace(b'Doc.', b'Doc two.'))
         self.assertTrue(passed, message)
 
-    def test_a_moved_tool_comment_or_line_break_needs_a_review(self):
-        old = b'run(a)  # nosec\nrun(b)\n# fmt: off\nx = [1]\ny = f(a, b)\n'
-        cases = {'moved comment': old.replace(b'run(a)  # nosec\nrun(b)', b'run(a)\nrun(b)  # nosec'),
-                 'moved line': old.replace(b'# fmt: off\nx = [1]', b'x = [1]\n# fmt: off'),
-                 'new line break': old.replace(b'f(a, b)', b'f(a,\n      b)')}
-        semgrep = b'def f(command):\n    # nosemgrep\n    \"\"\"Run.\"\"\"\n    return run(command, shell=True)  # nosec\n\n    \n'
-        cases |= {'removed docstring': (semgrep, semgrep.replace(b'    \"\"\"Run.\"\"\"\n', b'')),
-                  'removed blank line': (b'# nosemgrep\n\nrun(command)\n', b'# nosemgrep\nrun(command)\n'),
-                  'changed next line': (semgrep, semgrep.replace(b'Run.', b'Run it.')),
-                  'line after a code tool comment': (semgrep, semgrep.replace(b'  # nosec\n\n', b'  # nosec\n'))}
-        cases = {name: value if isinstance(value, tuple) else (old, value) for name, value in cases.items()}
-        for name, (before, new) in cases.items():
+    def test_a_comment_or_line_change_needs_a_review(self):
+        old = (b'# /// script\n# dependencies = ["safe-package"]\n# ///\nimport subprocess\n\n'
+               b'def f(command):\n    # nosemgrep\n    """Run."""\n    return subprocess.run(command, shell=True)  # Run it.\n')
+        cases = {'comment on code': old.replace(b'# Run it.', b'# Run the command.'),
+                 'nosemgrep on code': old.replace(b'# Run it.', b'# Run it. nosemgrep'),
+                 'own line comment': old.replace(b'    # nosemgrep\n', b'    # The command.\n'),
+                 'added comment': old.replace(b'import subprocess', b'# A comment.\nimport subprocess'),
+                 'script metadata': old.replace(b'safe-package', b'other-package'),
+                 'start line': b'#!/usr/bin/env python3\n' + old,
+                 'removed docstring': old.replace(b'    """Run."""\n', b''),
+                 'added docstring': b'"""New."""\n' + old,
+                 'removed blank line': old.replace(b'subprocess\n\n', b'subprocess\n'),
+                 'new line break': old.replace(b'(command, shell=True)', b'(command,\n                          shell=True)'),
+                 'moved comment': old.replace(b'  # Run it.', b'').replace(b'    # nosemgrep', b'    # nosemgrep  # Run it.')}
+        for name, new in cases.items():
             with self.subTest(name):
-                passed, message, _ = self.run_check(old=before, new=new)
+                passed, message, _ = self.run_check(old=old, new=new)
                 self.assertFalse(passed)
-                self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment, or the line breaks', message)
-
-    def test_an_added_or_removed_docstring_passes(self):
-        new = STORE_OLD.replace(b'        """Return the rows."""\n', b'').replace(b'class Store:\n', b'class Store:\n    """New."""\n', 1)
-        passed, message, _ = self.run_check(new=new.replace(b'    """The rows."""\n', b''))
-        self.assertTrue(passed, message)
+                self.assertIn('Docstring check: ' + TOKENS, message)
 
     def test_a_code_change_with_a_docstring_change_needs_a_review(self):
         passed, message, _ = self.run_check(new=STORE_DOCS.replace(b'[:n]', b'[:n + 1]'))
         self.assertFalse(passed)
-        self.assertIn('Docstring check: src/auth/store.py changes code, not only comments and docstrings.', message)
+        self.assertIn('Docstring check: src/auth/store.py changes code, not only docstrings.', message)
         self.assertIn('@codex security review', message)
 
     def test_a_string_that_is_not_a_docstring_needs_a_review(self):
@@ -646,17 +625,6 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(new=new)
                 self.assertFalse(passed)
                 self.assertIn('changes code', message)
-
-    def test_a_tool_comment_or_start_line_needs_a_review(self):
-        cases = {'nosec': STORE_OLD.replace(b'[:n]', b'[:n]  # nosec'),
-                 'type ignore': STORE_OLD.replace(b'[:n]', b'[:n]  # type: ignore'),
-                 'noqa': STORE_OLD.replace(b'  # noqa: F401', b''),
-                 'start line': STORE_OLD.replace(b'python3', b'-S python3 -X dev')}
-        for name, new in cases.items():
-            with self.subTest(name):
-                passed, message, _ = self.run_check(new=new)
-                self.assertFalse(passed)
-                self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment, or the line breaks of the code.', message)
 
     def test_a_parse_error_needs_a_review(self):
         for old, new in ((STORE_OLD, STORE_DOCS + b'def (\n'), (STORE_OLD + b'\x00', STORE_DOCS), (STORE_OLD, b'\tx\n  y\n')):
@@ -700,6 +668,10 @@ class DocstringCheckTest(unittest.TestCase):
             'import': ({'src/cli.py': b'from src.auth.store import __doc__ as text\n'}, 'src/cli.py imports __doc__ of a module'),
             'inspect': ({'src/cli.py': b'from inspect import getdoc\n'}, 'src/cli.py names getdoc'),
             'source': ({'src/cli.py': b'import inspect\ninspect.getsource(f)\n'}, 'src/cli.py names getsource'),
+            'ast reader': ({'src/cli.py': b'import ast\nexec(ast.get_docstring(tree))\n'}, 'src/cli.py names get_docstring'),
+            'loader': ({'src/cli.py': b'__loader__.get_source(name)\n'}, 'src/cli.py names get_source'),
+            'own file': ({STORE: STORE_DOCS + b'open(__file__)\n'}, 'src/auth/store.py names its own source file'),
+            'file path': ({'src/cli.py': b'Path("src/auth/store.py").read_text()\n'}, 'src/cli.py names the file src/auth/store.py'),
             'click': ({'src/cli.py': b'import click.testing\n'}, 'src/cli.py names click'),
             'from click': ({'src/cli.py': b'from click import command\n'}, 'src/cli.py names click'),
             'doctest config': ({'pyproject.toml': b'addopts = "--doctest-modules"\n'}, 'pyproject.toml names a docstring reader'),
@@ -707,14 +679,15 @@ class DocstringCheckTest(unittest.TestCase):
         }
         for name, (tree, expected) in cases.items():
             with self.subTest(name):
-                own = STORE in tree
-                passed, message, _ = self.run_check(old=STORE_OLD + b'print(__doc__)\n' if own else STORE_OLD,
+                own = tree.get(STORE, STORE_DOCS)[len(STORE_DOCS):]
+                passed, message, _ = self.run_check(old=STORE_OLD + own,
                                                     new=tree.get(STORE, STORE_DOCS), tree={STORE: STORE_DOCS} | tree)
                 self.assertFalse(passed)
                 self.assertIn(expected + ', so a docstring can be code.', message)
 
     def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
         tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
+                'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',
                 'README.md': b'Read `__doc__` with `pydoc`.\n'}
         passed, message, _ = self.run_check(tree=tree)
         self.assertTrue(passed, message)
