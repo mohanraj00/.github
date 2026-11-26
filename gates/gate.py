@@ -938,6 +938,12 @@ def text_forms(data):
     return forms
 
 
+def metaclass_name(node):
+    """Return True if the expression names type or a metaclass, for example abc.ABCMeta."""
+    name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else ''
+    return name == 'type' or name.endswith(('Meta', 'Metaclass', 'MetaClass', 'EnumType'))
+
+
 def python_reader(tree, changed, files):
     """Return the reason if the Python tree can read a docstring, else None."""
     for node in ast.walk(tree):
@@ -953,6 +959,13 @@ def python_reader(tree, changed, files):
             return 'names its own source file'
         if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
             return 'reads %s of an object' % node.attr
+        # A metaclass gets the namespace of each class that uses it, also of a subclass with no metaclass keyword. A
+        # metaclass is a subclass of type, for example "class Runner(type)", or the result of a call with three
+        # arguments, for example 'type("Runner", (type,), {"__new__": run})'.
+        if isinstance(node, ast.ClassDef) and any(metaclass_name(x) for x in node.bases):
+            return 'defines a metaclass'
+        if isinstance(node, ast.Call) and len(node.args) == 3 and metaclass_name(node.func):
+            return 'makes a class with a metaclass'
         # A class pattern reads an attribute with no ast.Attribute, for example "case object(__doc__=text)".
         found = ({'__doc__'} | ORIGIN_NAMES) & set(node.kwd_attrs if isinstance(node, ast.MatchClass) else
                                                     [node.arg] if isinstance(node, ast.keyword) else [])
