@@ -807,6 +807,8 @@ class DocstringCheckTest(unittest.TestCase):
                         'tools/meta.py names __prepare__'),
             'add metaclass': ({'tools/meta.py': b'import six\nBase = six.add_metaclass(Runner)(object)\n'},
                               'tools/meta.py names add_metaclass'),
+            'catch warnings': ({'tools/run.py': b'import warnings\nwith warnings.catch_warnings(record=True) as w:\n    pass\n'},
+                               'tools/run.py names catch_warnings'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -861,7 +863,9 @@ class DocstringCheckTest(unittest.TestCase):
 
     def test_a_listed_file_that_reads_the_command_line_needs_a_review(self):
         cases = {'argv': b'import sys\nrun(open(sys.argv[0]).read())\n', 'from import': b'from sys import argv\n',
-                 'orig argv': b'import sys\nname = sys.orig_argv[1]\n'}
+                 'orig argv': b'import sys\nname = sys.orig_argv[1]\n',
+                 'warning file': b'import warnings\nwarnings.warn("x")\n',
+                 'filename': b'name = record.filename\n'}
         for name, code in cases.items():
             with self.subTest(name):
                 old, new = STORE_OLD + code, STORE_DOCS + code

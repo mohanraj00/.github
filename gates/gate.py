@@ -81,7 +81,9 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              '__getattribute__', '__getstate__', '__reduce__', '__reduce_ex__', 'copyreg', '_getframe', 'currentframe',
              'gc', 'get_referents', 'get_referrers', 'ctypes', 'traceback', 'extract_stack', 'walk_stack',
              # A metaclass gets the namespace of a class, and the namespace holds __doc__.
-             '__prepare__', 'add_metaclass', 'with_metaclass', 'new_class', 'prepare_class'}
+             '__prepare__', 'add_metaclass', 'with_metaclass', 'new_class', 'prepare_class',
+             # A captured warning gives the source file of the code that gives it.
+             'catch_warnings', 'showwarning', 'formatwarning', 'captureWarnings', 'WarningMessage'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
@@ -90,9 +92,10 @@ ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__c
                 'cr_code', 'f_code', '__dict__', '__globals__', '__builtins__', 'f_globals', 'f_locals', 'f_builtins', 'f_back',
                 'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents', 'co_filename',
                 '__traceback__', 'pathname', 'metaclass'}
-# A script gets the path of its own source file from the command line, for example "open(sys.argv[0])". The names count
-# only in a changed listed file, as a bare __file__ does.
-SELF_NAMES = {'argv', 'orig_argv'}
+# A script gets the path of its own source file from the command line, for example "open(sys.argv[0])", or from a
+# warning that it gives, for example "WarningMessage.filename". The names count only in a changed listed file, as a
+# bare __file__ does.
+SELF_NAMES = {'argv', 'orig_argv', 'filename', 'warnings'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
 # "pytest --doctest-modules".
 DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
