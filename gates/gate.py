@@ -98,7 +98,7 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'zcat', 'bzcat', 'xzcat', 'unxz', 'unzstd', 'zstdcat', 'xxd', 'unzip', 'uudecode', 'base32', 'basenc',
              'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio',
              # A transcoder can decode a reader from text in another encoding, for example "iconv -f UTF-7 run.txt | sh".
-             'iconv', 'uconv', 'recode', 'piconv', 'enconv', 'native2ascii', 'konwert', 'dd',
+             'iconv', 'uconv', 'recode', 'piconv', 'enconv', 'native2ascii', 'konwert', 'dd', 'encodings',
              # This tuple of functools holds the string '__doc__'.
              'WRAPPER_ASSIGNMENTS',
              # The bytecode cache holds a copy of each docstring.
@@ -160,7 +160,7 @@ CACHE_WORDS = re.compile(rb'__pycache__|\.py[co]\b|pycache_prefix|cache_from_sou
 IGNORE_FILES = {'.gitignore', '.dockerignore', '.hgignore', '.npmignore'}
 # A text in one of these encodings can hide a reader in ASCII or in bytes that are not ASCII, for example UTF-7, a
 # Unicode escape or an EBCDIC code page.
-ENCODED = re.compile(rb'utf[-_ ]?7|\bu7\b|unicode[-_ ]?1[-_ ]?1|unicode[-_ ]?escape|ebcdic|\b(?:cp|ibm)[-_ ]?\d{2,5}\b',
+ENCODED = re.compile(rb'utf[-_ ]?7|\bu7\b|unicode[-_ ]?1[-_ ]?1|unicode[-_ ]?escape|ebcdic|\b(?:cs)?(?:cp|ibm)[-_ ]?\d{2,5}\b',
                      re.IGNORECASE)
 # The encodings that decode each ASCII byte to the same character, so the word rules read the text as Python reads it.
 # The names are in lower case, with "_" in place of "-" and of a space.
@@ -1099,17 +1099,23 @@ def python_reader(tree, changed, files):
         if isinstance(node, ast.Constant) and node.value in ORIGIN_NAMES:
             return 'names %s in a string' % node.value
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
-            # Compare bytes, with each name in UTF-8. A str value can have a lone surrogate.
+            # Compare bytes, with each name in UTF-8. A str value can have a lone surrogate. A bytes value can be UTF-16
+            # or UTF-32 text, so it gets the same forms as a file.
             raw = node.value if isinstance(node.value, bytes) else node.value.encode('utf-8', 'surrogatepass')
+            forms = text_forms(raw) if isinstance(node.value, bytes) else [raw]
             # A command string can name the file at each place, for example "cat src/auth/store.py | sh".
-            name = file_name_in(files, [raw])
+            name = file_name_in(files, forms)
             if name:
                 return 'names the file %s' % show(name)
             # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
-            if CACHE_WORDS.search(raw):
+            if any(CACHE_WORDS.search(x) for x in forms):
                 return 'names the bytecode cache in a string'
-            if DOC_WORDS.search(raw):
+            if any(DOC_WORDS.search(x) for x in forms):
                 return 'names a docstring reader in a string'
+            # A call that the decode rule does not know can get the encoding from a string, for example
+            # Path.read_text("utf-7").
+            if any(ENCODED.search(x) for x in forms):
+                return 'names an encoding that can hide a reader in a string'
         # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
@@ -1131,7 +1137,8 @@ def python_reader(tree, changed, files):
 
 def decode_codec(node):
     """Return the encoding node of a call that can decode text, else None. This includes a keyword "encoding" of each
-    call, the first argument of a decode method, and the encoding argument of str, open and TextIOWrapper."""
+    call, the first argument of a decode method, and the encoding argument of str, open, fdopen, TextIOWrapper and the
+    read_text and open methods of pathlib."""
     if not isinstance(node, ast.Call):
         return None
     for keyword in node.keywords:
@@ -1139,7 +1146,11 @@ def decode_codec(node):
             return keyword.value
     name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) \
         else ''
-    index = {'decode': 0, 'str': 1, 'TextIOWrapper': 1, 'open': 3}.get(name)
+    index = {'decode': 0, 'str': 1, 'TextIOWrapper': 1, 'open': 3, 'fdopen': 3, 'read_text': 0}.get(name)
+    # Path.open has no file argument, so its encoding is the third argument.
+    if name == 'open' and isinstance(node.func, ast.Attribute) and not (isinstance(node.func.value, ast.Name) and
+                                                                         node.func.value.id in ('io', 'os', 'builtins')):
+        index = 2
     if index is not None and len(node.args) > index:
         return node.args[index]
     if index is not None and any(isinstance(x, ast.Starred) for x in node.args):

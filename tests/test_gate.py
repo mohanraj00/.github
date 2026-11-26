@@ -889,6 +889,15 @@ class DocstringCheckTest(unittest.TestCase):
                             'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
             'codec name': ({'tools/run.py': b'run(str(DATA, CODEC))\n'},
                            'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'read text': ({'tools/run.py': b'run(PATH.read_text(CODEC))\n'},
+                          'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'path open': ({'tools/run.py': b'run(PATH.open("r", -1, CODEC).read())\n'},
+                          'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'codec string': ({'tools/run.py': b'run(load(PATH, "UTF-7"))\n'},
+                             'tools/run.py names an encoding that can hide a reader in a string'),
+            'utf-16 bytes': ({'tools/run.py': b'run(load(b"_\\x00_\\x00d\\x00o\\x00c\\x00_\\x00_\\x00"))\n'},
+                             'tools/run.py names a docstring reader in a string'),
+            'encodings': ({'tools/run.py': b'from encodings import utf_7\n'}, 'tools/run.py names encodings'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -974,7 +983,8 @@ class DocstringCheckTest(unittest.TestCase):
 
     def test_a_plain_decode_does_not_need_a_review(self):
         for source in (b'x = DATA.decode()\n', b'x = DATA.decode("UTF-8")\n', b'x = open(PATH, encoding="utf-8").read()\n',
-                       b'x = str(DATA, "latin-1")\n', b'x = open(PATH, encoding=None)\n'):
+                       b'x = str(DATA, "latin-1")\n', b'x = open(PATH, encoding=None)\n', b'x = PATH.read_text("utf-8")\n',
+                       b'x = open(PATH, "r", -1, "ascii")\n'):
             with self.subTest(source=source):
                 self.assertIsNone(gate.python_reader(gate.ast.parse(source), False, ['src/auth/store.py']))
 
