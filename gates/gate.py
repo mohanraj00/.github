@@ -175,6 +175,10 @@ IGNORE_FILES = {'.gitignore', '.dockerignore', '.hgignore', '.npmignore'}
 # Unicode escape or an EBCDIC code page.
 ENCODED = re.compile(rb'utf[-_ ]?7|\bu7\b|unicode[-_ ]?1[-_ ]?1|unicode[-_ ]?escape|ebcdic|\b(?:cs)?(?:cp|ibm)[-_ ]?\d{2,5}\b',
                      re.IGNORECASE)
+# A log record gives the source file of the code that logs, for example "%(filename)s" of logging.Formatter or
+# record.filename. Thus these fields count in each file, also in the str.format and string.Template styles.
+LOG_FIELDS = re.compile(rb'%\(\s*(?:filename|pathname|module)\s*\)|\{\s*(?:filename|pathname|module)\s*[!:}]'
+                        rb'|\$\{?(?:filename|pathname|module)\b')
 # A Windows volume can give a file a short name, for example LONGFI~1.PY or LO1A2B~1.PY, so a reader can open a listed
 # file with no part of its name. Thus each short name in a file fails closed.
 SHORT_NAME = re.compile(rb"[\w$#&@!%^(){}'`-]~\d")
@@ -1057,6 +1061,8 @@ def doc_reader(path, data, changed, files):
         return 'names an encoding that can hide a reader' + where
     if any(SHORT_NAME.search(x) for x in texts):
         return 'names a Windows short name' + where
+    if any(LOG_FIELDS.search(x) for x in texts):
+        return 'names a log record field of the source file' + where
     if path in PATH_DATA:
         return None
     name = file_name_in(files, texts)
@@ -1135,6 +1141,9 @@ def python_reader(tree, changed, files):
             return 'names its own source file'
         if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
             return 'reads %s of an object' % node.attr
+        # A log record, a warning and a stack frame summary give their source file in filename.
+        if isinstance(node, ast.Attribute) and node.attr == 'filename':
+            return 'reads filename of an object'
         # A metaclass gets the namespace of each class that uses it, also of a subclass with no metaclass keyword. A
         # metaclass is a subclass of type, for example "class Runner(type)", or the result of a call with three
         # arguments, for example 'type("Runner", (type,), {"__new__": run})'.
@@ -1186,6 +1195,8 @@ def python_reader(tree, changed, files):
                 return 'names an encoding that can hide a reader in a string'
             if any(SHORT_NAME.search(x) for x in forms):
                 return 'names a Windows short name in a string'
+            if any(LOG_FIELDS.search(x) for x in forms):
+                return 'names a log record field of the source file in a string'
         # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))

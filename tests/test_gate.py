@@ -931,6 +931,12 @@ class DocstringCheckTest(unittest.TestCase):
                              'tools/run.py names faulthandler'),
             'dump traceback': ({'tools/run.py': b'from fh import dump_traceback_later\n'},
                                'tools/run.py names dump_traceback_later'),
+            'log format': ({'tools/run.py': b'import logging\nhandler.setFormatter(logging.Formatter("%(filename)s"))\n'},
+                           'tools/run.py names a log record field of the source file in a string'),
+            'log brace': ({'tools/log.ini': b'[formatter_run]\nformat={filename}\nstyle={\n'},
+                          'tools/log.ini names a log record field of the source file'),
+            'record filename': ({'tools/run.py': b'def emit(record):\n    run(record.filename)\n'},
+                                'tools/run.py reads filename of an object'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -988,7 +994,7 @@ class DocstringCheckTest(unittest.TestCase):
         cases = {'argv': b'import sys\nrun(open(sys.argv[0]).read())\n', 'from import': b'from sys import argv\n',
                  'orig argv': b'import sys\nname = sys.orig_argv[1]\n',
                  'warning file': b'import warnings\nwarnings.warn("x")\n',
-                 'filename': b'name = record.filename\n'}
+                 'filename': b'def emit(filename):\n    run(filename)\n'}
         for name, code in cases.items():
             with self.subTest(name):
                 old, new = STORE_OLD + code, STORE_DOCS + code
