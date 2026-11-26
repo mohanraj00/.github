@@ -121,7 +121,11 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # can print a docstring on its own line.
              'cgitb', 'tbtools', 'werkzeug', 'sentry_sdk', 'raven', 'rollbar', 'bugsnag', 'loguru', 'pretty_errors',
              'tbvaccine', 'stack_data', 'executing', 'varname', 'icecream', 'snoop', 'birdseye', 'pysnooper',
-             'heartrate', 'viztracer', 'hunter', 'friendly_traceback', 'context_line', 'context_lines', 'pre_context', 'post_context',
+             'heartrate', 'viztracer', 'hunter', 'friendly_traceback',
+             # A profiler gives the source file of each function that it profiles, for example FunctionProfile.file_name
+             # of pstats.
+             'cProfile', 'profile', 'pstats', '_lsprof', 'get_stats_profile', 'func_profiles', 'FunctionProfile', 'yappi',
+             'pyinstrument', 'line_profiler', 'memory_profiler', 'scalene', 'py_spy', 'austin', 'context_line', 'context_lines', 'pre_context', 'post_context',
              # The interpreter records the source file and line of the code that makes a coroutine, for example in
              # cr_origin.
              'set_coroutine_origin_tracking_depth', 'get_coroutine_origin_tracking_depth'}
