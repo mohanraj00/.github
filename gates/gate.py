@@ -97,6 +97,8 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'unpack_archive', 'pickle', 'shelve', 'fromhex', 'codecs', 'rot13', 'rot_13', 'uu', 'quopri', 'gunzip',
              'zcat', 'bzcat', 'xzcat', 'unxz', 'unzstd', 'zstdcat', 'xxd', 'unzip', 'uudecode', 'base32', 'basenc',
              'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio',
+             # A transcoder can decode a reader from text in another encoding, for example "iconv -f UTF-7 run.txt | sh".
+             'iconv', 'uconv', 'recode', 'piconv', 'enconv', 'native2ascii', 'konwert', 'dd',
              # This tuple of functools holds the string '__doc__'.
              'WRAPPER_ASSIGNMENTS',
              # The bytecode cache holds a copy of each docstring.
@@ -156,6 +158,14 @@ CHECKOUT = re.compile(rb'filter|working-tree-encoding|ident|lfs', re.IGNORECASE)
 # lists these paths, but no program runs it.
 CACHE_WORDS = re.compile(rb'__pycache__|\.py[co]\b|pycache_prefix|cache_from_source|cache_tag', re.IGNORECASE)
 IGNORE_FILES = {'.gitignore', '.dockerignore', '.hgignore', '.npmignore'}
+# A text in one of these encodings can hide a reader in ASCII or in bytes that are not ASCII, for example UTF-7, a
+# Unicode escape or an EBCDIC code page.
+ENCODED = re.compile(rb'utf[-_ ]?7|\bu7\b|unicode[-_ ]?1[-_ ]?1|unicode[-_ ]?escape|ebcdic|\b(?:cp|ibm)[-_ ]?\d{2,5}\b',
+                     re.IGNORECASE)
+# The encodings that decode each ASCII byte to the same character, so the word rules read the text as Python reads it.
+# The names are in lower case, with "_" in place of "-" and of a space.
+PLAIN_CODECS = {'utf_8', 'utf8', 'u8', 'utf_8_sig', 'ascii', 'us_ascii', 'latin_1', 'latin1', 'iso_8859_1',
+                'iso8859_1', 'l1'}
 # A file with one of these extensions, or with a #! line of Python, is Python. The #! line must run Python directly: a
 # path to python, or /usr/bin/env and python, and one optional group of flags with no argument. A line such as
 # '#!/usr/bin/env -S sh -c ... python' names python, but it runs a shell, so it does not match.
@@ -977,6 +987,8 @@ def doc_reader(path, data, changed, files):
         return 'names a docstring reader' + where
     if posixpath.basename(path) not in IGNORE_FILES and any(CACHE_WORDS.search(x) for x in texts):
         return 'names the bytecode cache' + where
+    if any(ENCODED.search(x) for x in texts):
+        return 'names an encoding that can hide a reader' + where
     if path in PATH_DATA:
         return None
     name = file_name_in(files, texts)
@@ -1076,6 +1088,14 @@ def python_reader(tree, changed, files):
                                                     [node.arg] if isinstance(node, ast.keyword) else [])
         if found:
             return 'reads %s in a pattern or a keyword' % sorted(found)[0]
+        # A decode can get a reader from text in another encoding, for example b'...'.decode('utf-7') or
+        # open(path, encoding='cp037'). Thus each encoding of a decode must be a literal of PLAIN_CODECS.
+        codec = decode_codec(node)
+        if codec is not None:
+            name = codec.value.lower().replace('-', '_').replace(' ', '_') if isinstance(codec, ast.Constant) and \
+                isinstance(codec.value, str) else None
+            if not (isinstance(codec, ast.Constant) and codec.value is None) and name not in PLAIN_CODECS:
+                return 'decodes text with an encoding that is not UTF-8, ASCII or Latin-1'
         if isinstance(node, ast.Constant) and node.value in ORIGIN_NAMES:
             return 'names %s in a string' % node.value
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
@@ -1106,6 +1126,24 @@ def python_reader(tree, changed, files):
         word = next((x for x in names if x not in ('__doc__', '__file__') and DOC_WORDS.search(x.encode())), None)
         if word:
             return 'names %s' % word
+    return None
+
+
+def decode_codec(node):
+    """Return the encoding node of a call that can decode text, else None. This includes a keyword "encoding" of each
+    call, the first argument of a decode method, and the encoding argument of str, open and TextIOWrapper."""
+    if not isinstance(node, ast.Call):
+        return None
+    for keyword in node.keywords:
+        if keyword.arg == 'encoding' or keyword.arg is None:
+            return keyword.value
+    name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) \
+        else ''
+    index = {'decode': 0, 'str': 1, 'TextIOWrapper': 1, 'open': 3}.get(name)
+    if index is not None and len(node.args) > index:
+        return node.args[index]
+    if index is not None and any(isinstance(x, ast.Starred) for x in node.args):
+        return node.args[-1]
     return None
 
 

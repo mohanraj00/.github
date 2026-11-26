@@ -880,6 +880,15 @@ class DocstringCheckTest(unittest.TestCase):
                              'tools/run.py names a docstring reader in a comment'),
             'comment cache': ({'tools/run.py': b'# cat src/auth/__pycache__/*.pyc\n'},
                               'tools/run.py names the bytecode cache in a comment'),
+            'iconv': ({'tools/run.sh': b'iconv -f UTF-7 tools/run.txt | python3\n'}, 'tools/run.sh names a docstring reader'),
+            'utf-7 word': ({'tools/run.sh': b'python3 -X utf8 tools/load.py UTF-7 | sh\n'},
+                           'tools/run.sh names an encoding that can hide a reader'),
+            'decode utf-7': ({'tools/run.py': b'run(DATA.decode("utf-7"))\n'},
+                             'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'ebcdic open': ({'tools/run.py': b'run(open(PATH, encoding="cp037").read())\n'},
+                            'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'codec name': ({'tools/run.py': b'run(str(DATA, CODEC))\n'},
+                           'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -962,6 +971,12 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.ps1': data})
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: tools/run.ps1 names', message)
+
+    def test_a_plain_decode_does_not_need_a_review(self):
+        for source in (b'x = DATA.decode()\n', b'x = DATA.decode("UTF-8")\n', b'x = open(PATH, encoding="utf-8").read()\n',
+                       b'x = str(DATA, "latin-1")\n', b'x = open(PATH, encoding=None)\n'):
+            with self.subTest(source=source):
+                self.assertIsNone(gate.python_reader(gate.ast.parse(source), False, ['src/auth/store.py']))
 
     def test_an_ignore_file_can_name_the_bytecode_cache(self):
         tree = {STORE: STORE_DOCS, '.gitignore': b'__pycache__/\n*.pyc\n'}
