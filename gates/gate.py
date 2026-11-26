@@ -110,7 +110,10 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'subunit',
              # functools copies the docstring of a function to its wrapper, and a __setattr__ or a __set__ method can
              # get the copy.
-             'wraps', 'update_wrapper', 'cached_property', '__setattr__', '__set__'}
+             'wraps', 'update_wrapper', 'cached_property', '__setattr__', '__set__',
+             # A debugger, a tracer or a report tool finds a module by its dotted name and prints its source lines.
+             'trace', 'tracemalloc', 'pdb', 'bdb', 'ipdb', 'pudb', 'trepan', 'IPython', 'ultratb', 'rich',
+             'stackprinter', 'better_exceptions', 'pytest', 'coverage'}
 # The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
 # with other underscores, for example __dir__.
 BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
