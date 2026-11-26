@@ -75,6 +75,7 @@ class Fake:
         self.contents = contents or {}
         self.mains = set(on_main)
         self.tree = {}
+        self.modes = {}
         self.file_list = [{'path': x, 'previous': None, 'status': 'modified', 'lines': 10} if isinstance(x, str) else x for x in files]
         self.complete = complete
         self.comment_list = list(comments)
@@ -156,6 +157,9 @@ class Fake:
 
     def on_main(self, repo, commit):
         return repo == gate.UPSTREAM and commit in self.mains
+
+    def mode(self, ref, path):
+        return self.modes.get((ref, path), '100644')
 
     def parents(self, commit):
         return [TIP, HEAD] if commit == MERGE else []
@@ -577,9 +581,10 @@ TOKENS = 'src/auth/store.py changes a byte outside the docstrings, or adds or re
 
 
 class DocstringCheckTest(unittest.TestCase):
-    def run_check(self, new=STORE_DOCS, old=STORE_OLD, files=(STORE,), tree=None, labels=(), path=STORE):
+    def run_check(self, new=STORE_DOCS, old=STORE_OLD, files=(STORE,), tree=None, labels=(), path=STORE, modes=None):
         contents = {(REPO, path, TIP): old, (REPO, path, HEAD): new}
         fake = Fake(files=files, contents=contents, labels=labels)
+        fake.modes = modes or {}
         fake.tree = {path: new, 'tools/run.py': b'import argparse\n'} if tree is None else tree
         return check('security-review', fake)
 
@@ -617,6 +622,16 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(old=old, new=new)
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: ' + TOKENS, message)
+
+    def test_a_mode_change_or_no_change_needs_a_review(self):
+        passed, message, _ = self.run_check(new=STORE_OLD)
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: src/auth/store.py changes no byte, so the change is not a docstring change.', message)
+        for modes in ({(MERGE, STORE): '100755'}, {(TIP, STORE): None}):
+            with self.subTest(modes=modes):
+                passed, message, _ = self.run_check(modes=modes)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: src/auth/store.py changes its file mode.', message)
 
     def test_a_code_change_with_a_docstring_change_needs_a_review(self):
         passed, message, _ = self.run_check(new=STORE_DOCS.replace(b'[:n]', b'[:n + 1]'))
@@ -812,6 +827,17 @@ class TreeFilesTest(unittest.TestCase):
         call.assert_called_once_with('GET', '/repos/owner/project/git/trees/%s?recursive=1' % HEAD)
         self.assertEqual(opened.call_args[0][0].full_url, 'https://api.github.com/repos/owner/project/tarball/' + HEAD)
         return found
+
+    def test_the_mode_comes_from_the_tree_of_the_folder(self):
+        tree = {'tree': [{'path': 'store.py', 'type': 'blob', 'mode': '100755'}, {'path': 'x', 'type': 'tree', 'mode': '040000'}]}
+        with mock.patch.object(gate.GitHub, 'call', return_value=tree) as call:
+            github = gate.GitHub(REPO, 7, 'token')
+            self.assertEqual(github.mode(HEAD, 'src/auth/store.py'), '100755')
+            self.assertIsNone(github.mode(HEAD, 'src/auth/x'))
+        self.assertEqual(call.call_args[0][1], '/repos/%s/git/trees/%s:src/auth' % (REPO, HEAD))
+        with mock.patch.object(gate.GitHub, 'call', return_value={'tree': [], 'truncated': True}):
+            with self.assertRaises(gate.GateError):
+                gate.GitHub(REPO, 7, 'token').mode(HEAD, 'store.py')
 
     def test_the_tree_has_each_file_without_the_top_folder(self):
         self.assertEqual(self.read(tarball({'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})),

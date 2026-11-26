@@ -361,6 +361,14 @@ class GitHub:
         data = self.call('GET', '/repos/%s/compare/%s...main' % (repo, commit))
         return data.get('status') in ('ahead', 'identical')
 
+    def mode(self, ref, path):
+        """Return the Git mode of the file at the commit, for example 100644 or 100755, or None if it does not exist."""
+        folder, name = posixpath.split(path)
+        tree = self.call('GET', '/repos/%s/git/trees/%s' % (self.repo, urllib.parse.quote('%s:%s' % (ref, folder), safe='/:')))
+        if not isinstance(tree, dict) or tree.get('truncated') or not isinstance(tree.get('tree'), list):
+            raise GateError('The GitHub API did not give the Git tree of %s at %s.' % (show(folder or '.'), ref[:12]))
+        return next((x.get('mode') for x in tree['tree'] if x.get('path') == name and x.get('type') == 'blob'), None)
+
     def parents(self, commit):
         """Return the parent SHAs of the commit, in order."""
         data = self.call('GET', '/repos/%s/commits/%s' % (self.repo, commit))
@@ -912,6 +920,11 @@ def docstring_check(gh, pr, listed, files):
         before, after = gh.content(gh.repo, path, base), gh.content(gh.repo, path, merge)
         if not before or not after:
             return None, 'Cannot read %s at the base or the head.' % show(path)
+        if before[1] == after[1]:
+            return None, '%s changes no byte, so the change is not a docstring change.' % show(path)
+        mode = gh.mode(base, path)
+        if mode is None or mode != gh.mode(merge, path):
+            return None, '%s changes its file mode.' % show(path)
         try:
             same = code_tree(before[1]) == code_tree(after[1])
             text = text_without_docstrings(before[1]) == text_without_docstrings(after[1])
