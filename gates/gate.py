@@ -851,7 +851,7 @@ def literal_tree(tree):
 
 def doc_reader(path, data, changed, files):
     """Return the reason if the file can read a docstring, else None. A bare __doc__ or __file__ names its own module
-    only, so it counts only in a changed file. A string that ends with the name of a changed file can open it. Python
+    only, so it counts only in a changed file. A string that contains the name of a changed file can open it. Python
     can run a file with each name, so each file that parses gets the Python rules. Each file that is not Python also
     gets the word rules, because a shell can run a doc or a config. Only a file of PATH_DATA can name a listed file."""
     python = path.endswith(('.py', '.pyw')) or PYTHON.match(data)
@@ -899,8 +899,10 @@ def python_reader(tree, changed, files):
             return 'names %s in a string' % node.value
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = node.value if isinstance(node.value, str) else node.value.decode('latin-1')
-            if any(text.endswith(x) for x in files):
-                return 'names the file %s' % show(text)
+            # A command string can name the file at each place, for example "cat src/auth/store.py | sh".
+            name = next((x for x in sorted(files) if x in text), None)
+            if name:
+                return 'names the file %s' % show(name)
             # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
             if DOC_WORDS.search(text.encode('utf-8', 'surrogateescape')):
                 return 'names a docstring reader in a string'
