@@ -409,13 +409,18 @@ class GitHub:
                 found[member.name.split('/', 1)[-1]] = archive.extractfile(member).read()
         raw = dict(found)
         # A link gets the content of its target in the tree, so the reader check reads it with the rules of the link path.
-        # A link to a folder keeps the names of the files in the folder. A .py link with no target file fails closed.
+        # A .py link with no target file fails closed.
         for path in links:
             target, hops = path, 0
             while target in links and hops <= len(links):
                 target, hops = posixpath.normpath(posixpath.join(posixpath.dirname(target), links[target])), hops + 1
             if target in found:
                 found[path] = found[target]
+            elif target in ('.', '/') or target.startswith(('../', '/')) or target == '..' or \
+                    any(x.startswith(target + '/') for x in list(found) + list(links)):
+                # A link to a folder gives a second name to each file in it, for example payload/store.py for
+                # "payload -> src/auth". A link out of the tree can come back into it. Both fail closed.
+                raise GateError('The link %s goes to a folder or out of the tree of %s.' % (show(path), ref[:12]))
             elif path.endswith('.py'):
                 raise GateError('The link %s has no target file in the tree of %s.' % (show(path), ref[:12]))
         # The tarball omits a file with the export-ignore attribute, and it has no submodule. Thus the Git tree must
