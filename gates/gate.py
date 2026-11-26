@@ -892,6 +892,9 @@ def python_reader(tree, changed, files):
             text = node.value if isinstance(node.value, str) else node.value.decode('latin-1')
             if any(text.endswith(x) for x in files):
                 return 'names the file %s' % show(text)
+            # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
+            if DOC_WORDS.search(text.encode('utf-8', 'surrogateescape')):
+                return 'names a docstring reader in a string'
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [x.name for x in node.names] if isinstance(node, ast.Import)
                  else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
