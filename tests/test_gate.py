@@ -73,6 +73,7 @@ class Fake:
                       'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}}
         self.contents = contents or {}
         self.mains = set(on_main)
+        self.tree = {}
         self.file_list = [{'path': x, 'previous': None, 'status': 'modified', 'lines': 10} if isinstance(x, str) else x for x in files]
         self.complete = complete
         self.comment_list = list(comments)
@@ -153,6 +154,11 @@ class Fake:
 
     def on_main(self, repo, commit):
         return repo == gate.UPSTREAM and commit in self.mains
+
+    def tree_files(self, ref):
+        if isinstance(self.tree, Exception):
+            raise self.tree
+        return self.tree
 
     def workflow_run(self, run_id):
         return dict(TRUSTED_RUN) if self.runs is None else self.runs.get(run_id)
@@ -545,6 +551,194 @@ class CopyCheckTest(unittest.TestCase):
 
     def test_the_blob_sha_is_the_git_value(self):
         self.assertEqual(gate.blob_sha(b''), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391')
+
+
+STORE = 'src/auth/store.py'
+STORE_OLD = b'''#!/usr/bin/env python3
+"""The store."""
+import os  # noqa: F401
+
+
+class Store:
+    """The rows."""
+
+    def rows(self, n):
+        """Return the rows."""
+        return self.data[:n]
+'''
+STORE_DOCS = STORE_OLD.replace(b'Return the rows.', b'Return the rows of the open snapshot.').replace(
+    b'        return', b'        # The open snapshot only.\n        return')
+
+
+class DocstringCheckTest(unittest.TestCase):
+    def run_check(self, new=STORE_DOCS, old=STORE_OLD, files=(STORE,), tree=None, labels=(), path=STORE):
+        contents = {(REPO, path, TIP): old, (REPO, path, HEAD): new}
+        fake = Fake(files=files, contents=contents, labels=labels)
+        fake.tree = {path: new, 'tools/run.py': b'import argparse\n'} if tree is None else tree
+        return check('security-review', fake)
+
+    def test_a_docstring_only_change_passes_with_no_review(self):
+        passed, message, output = self.run_check()
+        self.assertTrue(passed, message)
+        self.assertIn('Each listed path changes only comments and docstrings. No review is necessary.', message)
+        self.assertIn('src/auth/store.py: only comments and docstrings change.', message)
+        self.assertEqual(output, {'summary': 'Security review: not needed. Only comments and docstrings changed in a listed path.'})
+
+    def test_a_comment_only_change_passes_with_no_review(self):
+        new = STORE_OLD.replace(b'class Store:', b'# The store of the rows.\nclass Store:  # One class.')
+        passed, message, _ = self.run_check(new=new)
+        self.assertTrue(passed, message)
+
+    def test_an_added_or_removed_docstring_passes(self):
+        new = STORE_OLD.replace(b'        """Return the rows."""\n', b'').replace(b'class Store:\n', b'class Store:\n    """New."""\n', 1)
+        passed, message, _ = self.run_check(new=new.replace(b'    """The rows."""\n', b''))
+        self.assertTrue(passed, message)
+
+    def test_a_code_change_with_a_docstring_change_needs_a_review(self):
+        passed, message, _ = self.run_check(new=STORE_DOCS.replace(b'[:n]', b'[:n + 1]'))
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: src/auth/store.py changes code, not only comments and docstrings.', message)
+        self.assertIn('@codex security review', message)
+
+    def test_a_string_that_is_not_a_docstring_needs_a_review(self):
+        cases = {'a second string': STORE_OLD.replace(b'"""Return the rows."""', b'"""Return the rows."""\n        "x"'),
+                 'an f-string': STORE_OLD.replace(b'"""Return the rows."""', b'f"{self.data}"'),
+                 'a bytes docstring': STORE_OLD.replace(b'"""Return the rows."""', b'b"Return the rows."'),
+                 'a string value': STORE_OLD.replace(b'[:n]', b'[:n] or "Return the rows."')}
+        for name, new in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(new=new)
+                self.assertFalse(passed)
+                self.assertIn('changes code', message)
+
+    def test_a_tool_comment_or_start_line_needs_a_review(self):
+        cases = {'nosec': STORE_OLD.replace(b'[:n]', b'[:n]  # nosec'),
+                 'type ignore': STORE_OLD.replace(b'[:n]', b'[:n]  # type: ignore'),
+                 'noqa': STORE_OLD.replace(b'  # noqa: F401', b''),
+                 'start line': STORE_OLD.replace(b'python3', b'-S python3 -X dev')}
+        for name, new in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(new=new)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py changes the #! line or a comment that controls a tool.', message)
+
+    def test_a_parse_error_needs_a_review(self):
+        for old, new in ((STORE_OLD, STORE_DOCS + b'def (\n'), (STORE_OLD + b'\x00', STORE_DOCS), (STORE_OLD, b'\tx\n  y\n')):
+            with self.subTest(new=new[-6:]):
+                passed, message, _ = self.run_check(old=old, new=new)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py does not parse at the base or the head', message)
+
+    def test_an_added_deleted_or_renamed_file_needs_a_review(self):
+        cases = {'added': [{'path': STORE, 'previous': None, 'status': 'added', 'lines': 10}],
+                 'removed': [{'path': STORE, 'previous': None, 'status': 'removed', 'lines': 10}],
+                 'renamed': [{'path': STORE, 'previous': 'src/auth/old.py', 'status': 'renamed', 'lines': 10}]}
+        for name, files in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(files=files)
+                self.assertFalse(passed)
+                self.assertIn('is not a modified file with the same path.', message)
+
+    def test_a_missing_file_needs_a_review(self):
+        fake = Fake(files=[STORE], contents={(REPO, STORE, HEAD): STORE_DOCS})
+        passed, message, _ = check('security-review', fake)
+        self.assertFalse(passed)
+        self.assertIn('Cannot read src/auth/store.py at the base or the head.', message)
+
+    def test_a_listed_file_that_is_not_python_needs_a_review(self):
+        passed, message, _ = self.run_check(path='tools/run.sh', files=['tools/run.sh'], old=b'# a\necho 1\n', new=b'# b\necho 1\n')
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: tools/run.sh is not a .py file.', message)
+
+    def test_one_python_and_one_other_listed_file_need_a_review(self):
+        passed, message, _ = self.run_check(files=[STORE, '.github/workflows/ci.yml'])
+        self.assertFalse(passed)
+        self.assertIn('.github/workflows/ci.yml is not a .py file.', message)
+
+    def test_a_tree_that_reads_a_docstring_needs_a_review(self):
+        cases = {
+            'own __doc__': ({STORE: STORE_DOCS + b'print(__doc__)\n'}, 'src/auth/store.py reads its own __doc__'),
+            'object __doc__': ({'src/cli.py': b'from src.auth import store\nprint(store.Store.rows.__doc__)\n'},
+                               'src/cli.py reads __doc__ of an object'),
+            'getattr': ({'src/cli.py': b'getattr(x, "__doc__")\n'}, 'src/cli.py names __doc__ in a string'),
+            'inspect': ({'src/cli.py': b'from inspect import getdoc\n'}, 'src/cli.py names getdoc'),
+            'source': ({'src/cli.py': b'import inspect\ninspect.getsource(f)\n'}, 'src/cli.py names getsource'),
+            'click': ({'src/cli.py': b'import click.testing\n'}, 'src/cli.py names click'),
+            'from click': ({'src/cli.py': b'from click import command\n'}, 'src/cli.py names click'),
+            'doctest config': ({'pyproject.toml': b'addopts = "--doctest-modules"\n'}, 'pyproject.toml names a docstring reader'),
+            'broken file': ({'tests/bad.py': b'def (\n'}, 'tests/bad.py does not parse at the head (SyntaxError)'),
+        }
+        for name, (tree, expected) in cases.items():
+            with self.subTest(name):
+                own = STORE in tree
+                passed, message, _ = self.run_check(old=STORE_OLD + b'print(__doc__)\n' if own else STORE_OLD,
+                                                    new=tree.get(STORE, STORE_DOCS), tree={STORE: STORE_DOCS} | tree)
+                self.assertFalse(passed)
+                self.assertIn(expected + ', so a docstring can be code.', message)
+
+    def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
+        tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
+                'README.md': b'Read `__doc__` with `pydoc`.\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
+
+    def test_a_tree_read_error_needs_a_review(self):
+        for error in (gate.GateError('The tree of aaaaaaaaaaaa has more than 20000 files.'), gate.tarfile.ReadError('bad')):
+            with self.subTest(error=type(error).__name__):
+                passed, message, _ = self.run_check(tree=error)
+                self.assertFalse(passed)
+                self.assertIn('The docstring check failed closed (%s' % type(error).__name__, message)
+
+    def test_security_needed_skips_the_docstring_check(self):
+        passed, message, _ = self.run_check(labels=['security-needed'])
+        self.assertFalse(passed)
+        self.assertNotIn('Docstring check', message)
+        self.assertNotIn('No review is necessary.', message)
+
+    def test_the_docstring_check_does_not_change_the_code_review(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=[STORE], contents=contents)
+        fake.tree = {STORE: STORE_DOCS}
+        passed, message, _ = check('cross-review', fake)
+        self.assertFalse(passed)
+
+
+def tarball(files, top='owner-project-aaaaaaa'):
+    """Return the bytes of a tarball like the one of the GitHub API, with a top folder and a link."""
+    data = io.BytesIO()
+    with gate.tarfile.open(fileobj=data, mode='w:gz') as archive:
+        folder = gate.tarfile.TarInfo(top)
+        folder.type = gate.tarfile.DIRTYPE
+        archive.addfile(folder)
+        for path, body in files.items():
+            info = gate.tarfile.TarInfo(top + '/' + path)
+            info.size = len(body)
+            archive.addfile(info, io.BytesIO(body))
+        link = gate.tarfile.TarInfo(top + '/link.py')
+        link.type, link.linkname = gate.tarfile.SYMTYPE, '/etc/passwd'
+        archive.addfile(link)
+    return data.getvalue()
+
+
+class TreeFilesTest(unittest.TestCase):
+    def read(self, data):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = lambda size: data[:size]
+        with mock.patch.object(gate.urllib.request, 'urlopen', return_value=response) as opened:
+            found = gate.GitHub(REPO, 7, 'token').tree_files(HEAD)
+        self.assertEqual(opened.call_args[0][0].full_url, 'https://api.github.com/repos/owner/project/tarball/' + HEAD)
+        return found
+
+    def test_the_tree_has_each_file_without_the_top_folder(self):
+        self.assertEqual(self.read(tarball({'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})),
+                         {'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})
+
+    def test_a_large_tree_fails_closed(self):
+        cases = {'TARBALL_BYTES': 'larger than 10 bytes', 'TREE_BYTES': 'larger than 10 bytes', 'TREE_FILES': 'more than 2 files'}
+        for name, expected in cases.items():
+            with self.subTest(name), mock.patch.object(gate, name, 2 if name == 'TREE_FILES' else 10):
+                with self.assertRaisesRegex(gate.GateError, expected):
+                    self.read(tarball({'a.py': b'x = 1\n', 'b.py': b'y = 2\n'}))
 
 
 CHECKOUT_OLD, CHECKOUT_NEW = '1' * 40, '2' * 40

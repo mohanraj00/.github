@@ -108,6 +108,8 @@ The security review of `mohanraj00/.github` covers the copies of its files in ea
 - a change of only the SHA in a pin line of the gates action, if the new SHA is on `main` of `mohanraj00/.github`;
 - an action bump PR of Dependabot. The PR author is `dependabot[bot]`. Each changed line is a `uses:` line, where only the 40-character SHA and its version comment change. No other file or line changes.
 
+A change of only comments and docstrings in listed `.py` files also needs no review, because the code does not change. Each file keeps its path. Its `ast` tree without the docstrings does not change, and its `#!` line and its tool comments, for example `# nosec`, do not change. No file of the head tree reads a docstring.
+
 The gate proves each one. Each other listed change still needs a review. The PR stays level 1.
 
 ## Docs-only PRs

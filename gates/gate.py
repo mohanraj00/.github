@@ -6,16 +6,20 @@ It never checks out or runs PR code. It reads the PR from the GitHub API and the
 It uses the standard library only, and it calls no host other than the GitHub API.
 """
 import argparse
+import ast
 import base64
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import tarfile
 import time
+import tokenize
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +61,20 @@ COPIES = {'docs/STANDARD.md': 'docs/STANDARD.md', 'tools/claude_review.py': 'gat
 DEPENDABOT = 'dependabot[bot]'
 USES = re.compile(rb'(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@([0-9a-f]{40}) # (v?[0-9][0-9A-Za-z.+-]*)(\r?\n)?')
 PIN_FILE = '.github/workflows/gates.yml'
+# A listed .py file that changes only comments and docstrings needs no security review. The gate reads the head tree from
+# the tarball and stops at these limits. A larger tree needs a review.
+TARBALL_BYTES = 64 * 1024 * 1024
+TREE_BYTES = 256 * 1024 * 1024
+TREE_FILES = 20000
+# A docstring is code if a file of the head tree reads it. A .py file that names one of these reads docstrings, source
+# lines or comments, or makes the help text of a command from the docstrings.
+DOC_NAMES = {'getdoc', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'linecache', 'pydoc', 'doctest',
+             'click', 'typer', 'fire'}
+# In a file that is not Python and not a doc, these words can read a docstring, for example "pytest --doctest-modules".
+DOC_WORDS = re.compile(rb'__doc__|getdoc|pydoc|doctest')
+DOC_TEXT = ('.md', '.rst', '.txt')
+# A comment with one of these words controls a tool, for example "# nosec" or "# type: ignore". It is not only text.
+DIRECTIVE = re.compile(r'(?i)\b(?:nosec|noqa|pragma|type:|pylint:|mypy:|pyright:|ruff:|fmt:|isort:|coverage:)')
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
@@ -330,6 +348,29 @@ class GitHub:
         """Return True if the commit is on the main branch of the repository."""
         data = self.call('GET', '/repos/%s/compare/%s...main' % (repo, commit))
         return data.get('status') in ('ahead', 'identical')
+
+    def tree_files(self, ref):
+        """Return {path: bytes} for each file of the tree at the commit. The tarball of the commit gives all files in one call."""
+        request = urllib.request.Request(API + '/repos/%s/tarball/%s' % (self.repo, ref), headers={
+            'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read(TARBALL_BYTES + 1)
+        if len(data) > TARBALL_BYTES:
+            raise GateError('The tarball of %s is larger than %d bytes.' % (ref[:12], TARBALL_BYTES))
+        found, total = {}, 0
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+            # The limit counts each entry, also the folders and the links.
+            for count, member in enumerate(archive, 1):
+                if count > TREE_FILES:
+                    raise GateError('The tree of %s has more than %d files.' % (ref[:12], TREE_FILES))
+                if not member.isfile():
+                    continue
+                total += member.size
+                if total > TREE_BYTES:
+                    raise GateError('The tree of %s is larger than %d bytes.' % (ref[:12], TREE_BYTES))
+                # The first part of each name is the top folder of the tarball.
+                found[member.name.split('/', 1)[-1]] = archive.extractfile(member).read()
+        return found
 
     def post_comment(self, body):
         self.call('POST', '/repos/%s/issues/%d/comments' % (self.repo, self.number), {'body': body})
@@ -687,6 +728,86 @@ def bump_check(gh, pr, files):
     return proved, None
 
 
+def code_tree(data):
+    """Return the ast dump of the Python source without its docstrings. A docstring is the first statement of a module,
+    class or function, if the statement is only a string constant. The tree has no comments."""
+    tree = ast.parse(data)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                node.body = node.body[1:]
+    return ast.dump(tree)
+
+
+def tool_lines(data):
+    """Return the lines that a tool can read outside of the tree: the start line #!, and each comment that controls a tool."""
+    first = data.split(b'\n', 1)[0]
+    found = [first] if first.startswith(b'#!') else []
+    tokens = tokenize.tokenize(io.BytesIO(data).readline)
+    return found + sorted(x.string for x in tokens if x.type == tokenize.COMMENT and DIRECTIVE.search(x.string))
+
+
+def doc_reader(path, data, changed):
+    """Return the reason if the file can read a docstring, else None. A bare __doc__ reads the docstrings of its own
+    module only, so it counts only in a changed file."""
+    if not path.endswith('.py'):
+        return 'names a docstring reader' if not path.endswith(DOC_TEXT) and DOC_WORDS.search(data) else None
+    try:
+        tree = ast.parse(data)
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
+        return 'does not parse at the head (%s)' % type(error).__name__
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == '__doc__':
+            return 'reads __doc__ of an object'
+        if isinstance(node, ast.Constant) and node.value == '__doc__':
+            return 'names __doc__ in a string'
+        if isinstance(node, ast.Name) and node.id == '__doc__' and changed:
+            return 'reads its own __doc__'
+        names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
+                 else [x.name for x in node.names] if isinstance(node, ast.Import)
+                 else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
+        found = {x.split('.')[0] for x in names} & DOC_NAMES
+        if found:
+            return 'names %s' % sorted(found)[0]
+    return None
+
+
+def docstring_check(gh, pr, listed, files):
+    """Return (proved lines, None) if each listed path is a .py file that changes only comments and docstrings, else
+    (None, reason). The file keeps its path. The tree of the base and the head are equal after the docstrings go.
+    No file of the head tree reads a docstring."""
+    head, base = pr['head']['sha'], pr['base']['sha']
+    status = {x['path']: x for x in files}
+    proved = []
+    for path in listed:
+        item = status.get(path)
+        if not path.endswith('.py'):
+            return None, '%s is not a .py file.' % show(path)
+        if not item or item.get('status') != 'modified' or item.get('previous'):
+            return None, '%s is not a modified file with the same path.' % show(path)
+        before, after = gh.content(gh.repo, path, base), gh.content(gh.repo, path, head)
+        if not before or not after:
+            return None, 'Cannot read %s at the base or the head.' % show(path)
+        try:
+            same = code_tree(before[1]) == code_tree(after[1])
+            tools = tool_lines(before[1]) == tool_lines(after[1])
+        except (SyntaxError, ValueError, RecursionError, MemoryError, tokenize.TokenError) as error:
+            return None, '%s does not parse at the base or the head (%s).' % (show(path), type(error).__name__)
+        if not same:
+            return None, '%s changes code, not only comments and docstrings.' % show(path)
+        if not tools:
+            return None, '%s changes the #! line or a comment that controls a tool.' % show(path)
+        proved.append('%s: only comments and docstrings change.' % show(path))
+    if not proved:
+        return None, 'No listed path changed.'
+    for path, data in sorted(gh.tree_files(head).items()):
+        reason = doc_reader(path, data, path in listed)
+        if reason:
+            return None, '%s %s, so a docstring can be code.' % (show(path), reason)
+    return proved, None
+
+
 def security_review(gh, config, pr, paths, complete, comments, changed, files=()):
     """Return (passed, lines, drop, summary). The summary is one line that tells the agent if a security review is necessary."""
     labels = {x['name'] for x in pr['labels']}
@@ -716,6 +837,15 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
             return (True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, [],
                     'Security review: not needed. Each listed path is a proved copy or pin change.')
         lines.append('Copy check: ' + reason)
+        # A change of only comments and docstrings in listed .py files needs no review. The code tree does not change.
+        try:
+            proved, reason = docstring_check(gh, pr, listed, files)
+        except (OSError, GateError, KeyError, TypeError, ValueError, tarfile.TarError) as error:
+            proved, reason = None, 'The docstring check failed closed (%s: %s).' % (type(error).__name__, show(error))
+        if proved:
+            return (True, ['Each listed path changes only comments and docstrings. No review is necessary.'] + proved, [],
+                    'Security review: not needed. Only comments and docstrings changed in a listed path.')
+        lines.append('Docstring check: ' + reason)
     if not complete:
         lines.append('The PR has more files than GitHub lists, so the change is security relevant.')
     if listed:
