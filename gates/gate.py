@@ -87,7 +87,7 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # These tools find or read the source file of a module by its name.
              'modulefinder', 'ModuleFinder', 'find_module', 'find_loader', 'imp', 'pyclbr', 'py_compile', 'compileall',
              'pkg_resources', 'meta_path', 'path_hooks', 'path_importer_cache', 'FileFinder', 'SourceFileLoader',
-             'tabnanny', 'symtable'}
+             'tabnanny', 'symtable', 'builtins'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
@@ -95,7 +95,7 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
 ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__code__', 'co_consts', 'co_code', 'gi_code',
                 'cr_code', 'f_code', '__dict__', '__globals__', '__builtins__', 'f_globals', 'f_locals', 'f_builtins', 'f_back',
                 'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents', 'co_filename',
-                '__traceback__', 'pathname', 'metaclass'}
+                '__traceback__', 'pathname', 'metaclass', '__class__'}
 # A script gets the path of its own source file from the command line, for example "open(sys.argv[0])", or from a
 # warning that it gives, for example "WarningMessage.filename". The names count only in a changed listed file, as a
 # bare __file__ does.
@@ -945,8 +945,9 @@ def text_forms(data):
 
 
 def metaclass_name(node):
-    """Return True if the expression names type or a metaclass, for example abc.ABCMeta."""
-    name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else ''
+    """Return True if the expression or the name is type or a metaclass, for example abc.ABCMeta."""
+    name = node if isinstance(node, str) else node.id if isinstance(node, ast.Name) else \
+        node.attr if isinstance(node, ast.Attribute) else ''
     return name == 'type' or name.endswith(('Meta', 'Metaclass', 'MetaClass', 'EnumType'))
 
 
@@ -972,6 +973,15 @@ def python_reader(tree, changed, files):
             return 'defines a metaclass'
         if isinstance(node, ast.Call) and len(node.args) == 3 and metaclass_name(node.func):
             return 'makes a class with a metaclass'
+        # A name can be a second name for a metaclass, for example "from builtins import type as factory" or
+        # "factory = type(int)". Thus each use of type or of a metaclass name counts, and so does a base that is a call.
+        if isinstance(node, ast.ClassDef) and any(isinstance(x, ast.Call) for x in node.bases):
+            return 'has a base that is a call'
+        found = [x for x in ([node] if isinstance(node, (ast.Name, ast.Attribute)) else
+                             [y.name.split('.')[-1] for y in node.names] if isinstance(node, (ast.Import, ast.ImportFrom))
+                             else []) if metaclass_name(x)]
+        if found:
+            return 'names a metaclass'
         # A class pattern reads an attribute with no ast.Attribute, for example "case object(__doc__=text)".
         found = ({'__doc__'} | ORIGIN_NAMES) & set(node.kwd_attrs if isinstance(node, ast.MatchClass) else
                                                     [node.arg] if isinstance(node, ast.keyword) else [])
