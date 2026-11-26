@@ -832,6 +832,10 @@ def text_without_docstrings(data):
     The mark is a null character, and Python source cannot contain one."""
     docs = docstring_starts(ast.parse(data))
     encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    # Strict UTF-8 gives one text for one byte string, so equal text is equal bytes. Another encoding, for example
+    # unicode_escape, can give equal text for different bytes, and a tool can read the bytes. It fails closed.
+    if encoding not in ('utf-8', 'utf-8-sig'):
+        raise ValueError('the source encoding %s is not UTF-8' % encoding)
     text = data.decode(encoding)
     starts = [0]
     for line in re.split(r'(?<=\n)', text):

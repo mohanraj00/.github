@@ -654,6 +654,18 @@ class DocstringCheckTest(unittest.TestCase):
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: src/auth/store.py changes its file mode, or it is not a regular file.', message)
 
+    def test_a_source_encoding_that_is_not_utf8_needs_a_review(self):
+        for cookie in (b'# -*- coding: unicode_escape -*-\n', b'# -*- coding: latin-1 -*-\n'):
+            with self.subTest(cookie=cookie):
+                passed, message, _ = self.run_check(old=cookie + STORE_OLD, new=cookie + STORE_DOCS)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py does not parse at the base or the head (ValueError)', message)
+
+    def test_a_bom_change_needs_a_review(self):
+        passed, message, _ = self.run_check(new=b'\xef\xbb\xbf' + STORE_DOCS)
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: ' + TOKENS, message)
+
     def test_a_code_change_with_a_docstring_change_needs_a_review(self):
         passed, message, _ = self.run_check(new=STORE_DOCS.replace(b'[:n]', b'[:n + 1]'))
         self.assertFalse(passed)
