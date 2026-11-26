@@ -116,6 +116,11 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # A debugger, a tracer or a report tool finds a module by its dotted name and prints its source lines.
              'trace', 'tracemalloc', 'pdb', 'bdb', 'ipdb', 'pudb', 'trepan', 'IPython', 'ultratb', 'rich',
              'stackprinter', 'better_exceptions', 'pytest', 'coverage',
+             # A report tool can print the source lines near a frame, for example cgitb.text(info, context=5), so it
+             # can print a docstring on its own line.
+             'cgitb', 'tbtools', 'werkzeug', 'sentry_sdk', 'raven', 'rollbar', 'bugsnag', 'loguru', 'pretty_errors',
+             'tbvaccine', 'stack_data', 'executing', 'varname', 'icecream', 'snoop', 'birdseye', 'pysnooper',
+             'heartrate', 'viztracer', 'hunter', 'friendly_traceback', 'context_line', 'context_lines', 'pre_context', 'post_context',
              # The interpreter records the source file and line of the code that makes a coroutine, for example in
              # cr_origin.
              'set_coroutine_origin_tracking_depth', 'get_coroutine_origin_tracking_depth'}
