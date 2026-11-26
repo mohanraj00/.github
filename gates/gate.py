@@ -79,14 +79,18 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
              'griffe', 'dis', 'marshal', 'help', 'vars', 'globals', 'locals', 'dir', 'getmembers', 'getmembers_static',
              '__getattribute__', '__getstate__', '__reduce__', '__reduce_ex__', 'copyreg', '_getframe', 'currentframe',
-             'gc', 'get_referents', 'get_referrers', 'ctypes'}
+             'gc', 'get_referents', 'get_referrers', 'ctypes', 'traceback', 'extract_stack', 'walk_stack'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
 # with one of these names counts in each file.
 ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__code__', 'co_consts', 'co_code', 'gi_code',
                 'cr_code', 'f_code', '__dict__', '__globals__', '__builtins__', 'f_globals', 'f_locals', 'f_builtins', 'f_back',
-                'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents'}
+                'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents', 'co_filename',
+                '__traceback__', 'pathname'}
+# A script gets the path of its own source file from the command line, for example "open(sys.argv[0])". The names count
+# only in a changed listed file, as a bare __file__ does.
+SELF_NAMES = {'argv', 'orig_argv'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
 # "pytest --doctest-modules".
 DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
@@ -964,6 +968,8 @@ def python_reader(tree, changed, files):
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [x.name for x in node.names] if isinstance(node, ast.Import)
                  else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
+        if changed and set(names) & SELF_NAMES:
+            return 'names its own source file in %s' % sorted(set(names) & SELF_NAMES)[0]
         found = {x.split('.')[0] for x in names} & DOC_NAMES
         if found:
             return 'names %s' % sorted(found)[0]

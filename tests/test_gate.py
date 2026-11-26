@@ -797,6 +797,10 @@ class DocstringCheckTest(unittest.TestCase):
             'frame globals': ({'tools/run.py': b'import sys\nrun(sys._getframe(0).f_globals)\n'}, 'tools/run.py reads f_globals of an object'),
             'gc': ({'tools/run.py': b'import gc\n'}, 'tools/run.py names gc'),
             'shell globals': ({'bin/run.sh': b"python3 -c 'print(f.__globals__)'\n"}, 'bin/run.sh names a docstring reader'),
+            'traceback': ({'tools/run.py': b'import traceback\nname = traceback.extract_stack()[0].filename\n'},
+                          'tools/run.py names traceback'),
+            'code file': ({'tools/run.py': b'name = code.co_filename\n'}, 'tools/run.py reads co_filename of an object'),
+            'trace frame': ({'tools/run.py': b'tb = error.__traceback__\n'}, 'tools/run.py reads __traceback__ of an object'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -848,6 +852,19 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(path=path, files=(path,), tree={path: STORE_DOCS, reader: data})
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: %s names the file' % reader, message)
+
+    def test_a_listed_file_that_reads_the_command_line_needs_a_review(self):
+        cases = {'argv': b'import sys\nrun(open(sys.argv[0]).read())\n', 'from import': b'from sys import argv\n',
+                 'orig argv': b'import sys\nname = sys.orig_argv[1]\n'}
+        for name, code in cases.items():
+            with self.subTest(name):
+                old, new = STORE_OLD + code, STORE_DOCS + code
+                passed, message, _ = self.run_check(old=old, new=new, tree={STORE: new})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: src/auth/store.py names its own source file in', message)
+        tree = {STORE: STORE_DOCS, 'tools/run.py': b'import sys\nprint(sys.argv[1:])\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
 
     def test_a_link_or_a_copy_of_a_listed_file_needs_a_review(self):
         passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'payload': STORE_DOCS})
