@@ -1094,15 +1094,22 @@ class TreeFilesTest(unittest.TestCase):
 
     def test_a_link_gets_the_content_of_its_target(self):
         found = self.read(tarball({'shared/reader.txt': b'from a import __doc__\n'},
-                                  links={'reader.py': 'shared/reader.txt', 'two.py': 'reader.py', 'gone.md': 'shared/gone.md'}))
+                                  links={'reader.py': 'shared/reader.txt', 'two.py': 'reader.py'}))
         self.assertEqual(found['reader.py'], b'from a import __doc__\n')
         self.assertEqual(found['two.py'], b'from a import __doc__\n')
-        self.assertNotIn('gone.md', found)
 
-    def test_a_python_link_with_no_target_file_fails_closed(self):
-        for target in ('loop.py', 'missing.py'):
+    def test_a_link_with_no_target_file_fails_closed(self):
+        for path, target in (('loop.py', 'loop.py'), ('loop.py', 'missing.py'), ('gone.md', 'shared/gone.md'),
+                             ('payload', 'SRC/AUTH/STORE.PY'), ('payload', 'src/AUTH/store.py')):
             with self.subTest(target=target), self.assertRaisesRegex(gate.GateError, 'has no target file'):
-                self.read(tarball({'shared/a.txt': b'x\n'}, links={'loop.py': target}))
+                self.read(tarball({'src/auth/store.py': b'x\n'}, links={path: target}))
+
+    def test_two_paths_in_another_case_or_form_fail_closed(self):
+        for other in ('SRC/AUTH/STORE.PY', 'src/auth/Store.py', 'src/auth/\uff53tore.py'):
+            with self.subTest(other=other), self.assertRaisesRegex(gate.GateError, 'can be one file in a checkout'):
+                self.read(tarball({'src/auth/store.py': b'x\n', other: b'y\n'}))
+        with self.assertRaisesRegex(gate.GateError, 'can be one file in a checkout'):
+            self.read(tarball({'src/auth/store.py': b'x\n'}, links={'SRC/auth/store.py': 'src/auth/store.py'}))
 
     def test_a_link_to_a_folder_or_out_of_the_tree_fails_closed(self):
         for path, target in (('payload', 'src/auth'), ('payload', '.'), ('deep/payload', '../src'), ('payload', '/etc'),

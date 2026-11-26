@@ -475,8 +475,18 @@ class GitHub:
                 # The first part of each name is the top folder of the tarball.
                 found[member.name.split('/', 1)[-1]] = archive.extractfile(member).read()
         raw = dict(found)
+        # A file system can ignore the case of a name or change its Unicode form. Then two paths of the tree can be one
+        # file in a checkout, so this fails closed.
+        names = {}
+        for path in list(found) + list(links):
+            key = fold(path)
+            if key in names:
+                raise GateError('The paths %s and %s of the tree of %s can be one file in a checkout.' % (
+                    show(names[key]), show(path), ref[:12]))
+            names[key] = path
         # A link gets the content of its target in the tree, so the reader check reads it with the rules of the link path.
-        # A .py link with no target file fails closed.
+        # A link with no target file fails closed, because a file system can find the target in another case, for
+        # example "payload -> SRC/AUTH/STORE.PY".
         for path in links:
             target, hops = path, 0
             while target in links and hops <= len(links):
@@ -488,7 +498,7 @@ class GitHub:
                 # A link to a folder gives a second name to each file in it, for example payload/store.py for
                 # "payload -> src/auth". A link out of the tree can come back into it. Both fail closed.
                 raise GateError('The link %s goes to a folder or out of the tree of %s.' % (show(path), ref[:12]))
-            elif path.endswith('.py'):
+            else:
                 raise GateError('The link %s has no target file in the tree of %s.' % (show(path), ref[:12]))
         # The tarball omits a file with the export-ignore attribute, and it has no submodule. Thus the Git tree must
         # agree with the tarball, so that no file can hide a reader.
