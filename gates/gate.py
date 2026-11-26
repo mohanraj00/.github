@@ -107,7 +107,10 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'register_introspection_functions', 'DocXMLRPCServer', 'DocXMLRPCRequestHandler', 'idlelib',
              # A test runner prints the docstring of each test in verbose mode, for example "python -m unittest -v".
              'unittest', 'TextTestRunner', 'TestProgram', 'nose', 'nose2', 'green', 'trial', 'testtools', 'stestr',
-             'subunit'}
+             'subunit',
+             # functools copies the docstring of a function to its wrapper, and a __setattr__ or a __set__ method can
+             # get the copy.
+             'wraps', 'update_wrapper', 'cached_property', '__setattr__', '__set__'}
 # The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
 # with other underscores, for example __dir__.
 BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
@@ -1019,6 +1022,10 @@ def python_reader(tree, changed, files):
             return 'imports __doc__ of a module'
         if isinstance(node, ast.Name) and node.id == '__doc__' and changed:
             return 'reads its own __doc__'
+        # A class can put a descriptor in __doc__, for example "__doc__ = Recorder()", and it then gets a copied
+        # docstring.
+        if isinstance(node, ast.Name) and node.id == '__doc__' and isinstance(node.ctx, ast.Store):
+            return 'sets __doc__'
         if isinstance(node, ast.Name) and node.id == '__file__' and changed:
             return 'names its own source file'
         if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
