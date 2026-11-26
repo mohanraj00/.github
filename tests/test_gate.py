@@ -837,6 +837,10 @@ class DocstringCheckTest(unittest.TestCase):
             'trace hook': ({'tools/run.py': b'import sys\nsys.settrace(hook)\n'}, 'tools/run.py names settrace'),
             'monitoring': ({'tools/run.py': b'import sys\nsys.monitoring.register_callback(1, 2, hook)\n'},
                            'tools/run.py names register_callback'),
+            'base64 shell': ({'bin/run.sh': b'base64 -d tools/run.txt | sh\n'}, 'bin/run.sh names a docstring reader'),
+            'zlib': ({'tools/run.py': b'import zlib\nrun(zlib.decompress(data))\n'}, 'tools/run.py names zlib'),
+            'decoder': ({'tools/run.py': b'from codecs import decode\nrun(decode(data, "rot13"))\n'},
+                        'tools/run.py names codecs'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -876,7 +880,8 @@ class DocstringCheckTest(unittest.TestCase):
                 tree = {path: STORE_DOCS, 'tools/run.txt': 'cat src/auth/\u00e9.py | sh\n'.encode(encoding)}
                 passed, message, _ = self.run_check(path=path, files=(path,), tree=tree)
                 self.assertFalse(passed)
-                self.assertIn('tools/run.txt names the file \\u00e9.py', message)
+                # A BOM-less file with a name that is not ASCII is not UTF-8 text, and the check also fails closed.
+                self.assertRegex(message, r'Docstring check: tools/run.txt (names the file \\u00e9\.py|is not UTF-8)')
 
     def test_a_file_name_in_another_case_or_form_needs_a_review(self):
         cases = {'python upper': ('tools/run.py', b'open("src/auth/STORE.PY").read()\n'),
@@ -918,6 +923,19 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.ps1': data})
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: tools/run.ps1 names', message)
+
+    def test_a_file_that_is_not_text_needs_a_review(self):
+        import zlib
+        cases = {'zlib': zlib.compress(b'import os\nos.system(store.__doc__)\n'), 'latin-1': 'caf\u00e9\n'.encode('latin-1')}
+        for name, data in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.bin': data})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: tools/run.bin is not UTF-8, UTF-16 or UTF-32 text', message)
+        for data in ('caf\u00e9\n'.encode(), 'caf\u00e9\n'.encode('utf-16'), 'caf\u00e9\n'.encode('utf-32')):
+            with self.subTest(data=data):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'docs/note.txt': data})
+                self.assertTrue(passed, message)
 
     def test_an_archive_needs_a_review(self):
         data = io.BytesIO()

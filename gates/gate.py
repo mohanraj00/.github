@@ -91,7 +91,12 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # A hook of the interpreter gets each event, for example the path of each source file that an import
              # opens.
              'addaudithook', 'audit', 'settrace', 'setprofile', 'monitoring', 'register_callback', 'call_tracing',
-             '_current_frames', 'meta_path'}
+             '_current_frames', 'meta_path',
+             # A decoder can unpack a reader from a text file, for example "base64 -d run.txt | sh".
+             'base64', 'binascii', 'zlib', 'gzip', 'bz2', 'lzma', 'zstd', 'compression', 'zipfile', 'tarfile',
+             'unpack_archive', 'pickle', 'shelve', 'fromhex', 'codecs', 'rot13', 'rot_13', 'uu', 'quopri', 'gunzip',
+             'zcat', 'bzcat', 'xzcat', 'unxz', 'unzstd', 'zstdcat', 'xxd', 'unzip', 'uudecode', 'base32', 'basenc',
+             'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
@@ -904,6 +909,9 @@ def doc_reader(path, data, changed, files):
     # The gate cannot read a compressed file. Python runs a zip file, also after a #! line, for example a .pyz app.
     if ZIP.search(data) or data.startswith(COMPRESSED):
         return 'is an archive or a compressed file'
+    # A file that is not text can hold a packed reader in a form that the gate cannot read, for example zlib data.
+    if not is_text(data):
+        return 'is not UTF-8, UTF-16 or UTF-32 text'
     # A checkout can write other bytes than the blob. A Git LFS pointer gets the object of the LFS store, and a filter,
     # a working-tree-encoding or an ident attribute changes the bytes. The gate reads only the blob.
     if data.startswith(b'version https://git-lfs.github.com/spec/'):
@@ -943,6 +951,19 @@ def file_name_in(files, forms):
     """Return the first name of files that is in one of the byte forms, in each case and Unicode form, else None."""
     texts = [fold(x.decode('utf-8', 'replace')) for x in forms]
     return next((x for x in sorted(files) if any(fold(x) in y for y in texts)), None)
+
+
+def is_text(data):
+    """Return True if the bytes are UTF-8 text, or UTF-16 or UTF-32 text with a BOM."""
+    for bom, encoding in ((codecs.BOM_UTF32_LE, 'utf-32'), (codecs.BOM_UTF32_BE, 'utf-32'), (codecs.BOM_UTF16_LE, 'utf-16'),
+                          (codecs.BOM_UTF16_BE, 'utf-16'), (b'', 'utf-8')):
+        if data.startswith(bom):
+            try:
+                data.decode(encoding)
+                return True
+            except UnicodeDecodeError:
+                pass
+    return False
 
 
 def text_forms(data):
