@@ -79,7 +79,9 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
              'griffe', 'dis', 'marshal', 'help', 'vars', 'globals', 'locals', 'dir', 'getmembers', 'getmembers_static',
              '__getattribute__', '__getstate__', '__reduce__', '__reduce_ex__', 'copyreg', '_getframe', 'currentframe',
-             'gc', 'get_referents', 'get_referrers', 'ctypes', 'traceback', 'extract_stack', 'walk_stack'}
+             'gc', 'get_referents', 'get_referrers', 'ctypes', 'traceback', 'extract_stack', 'walk_stack',
+             # A metaclass gets the namespace of a class, and the namespace holds __doc__.
+             '__prepare__', 'add_metaclass', 'with_metaclass', 'new_class', 'prepare_class'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
@@ -87,7 +89,7 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
 ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__code__', 'co_consts', 'co_code', 'gi_code',
                 'cr_code', 'f_code', '__dict__', '__globals__', '__builtins__', 'f_globals', 'f_locals', 'f_builtins', 'f_back',
                 'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents', 'co_filename',
-                '__traceback__', 'pathname'}
+                '__traceback__', 'pathname', 'metaclass'}
 # A script gets the path of its own source file from the command line, for example "open(sys.argv[0])". The names count
 # only in a changed listed file, as a bare __file__ does.
 SELF_NAMES = {'argv', 'orig_argv'}
@@ -965,7 +967,9 @@ def python_reader(tree, changed, files):
             # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
             if DOC_WORDS.search(raw):
                 return 'names a docstring reader in a string'
+        # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
+                 else [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                  else [x.name for x in node.names] if isinstance(node, ast.Import)
                  else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
         if changed and set(names) & SELF_NAMES:
