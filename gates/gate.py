@@ -83,7 +83,11 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # A metaclass gets the namespace of a class, and the namespace holds __doc__.
              '__prepare__', 'add_metaclass', 'with_metaclass', 'new_class', 'prepare_class',
              # A captured warning gives the source file of the code that gives it.
-             'catch_warnings', 'showwarning', 'formatwarning', 'captureWarnings', 'WarningMessage'}
+             'catch_warnings', 'showwarning', 'formatwarning', 'captureWarnings', 'WarningMessage',
+             # These tools find or read the source file of a module by its name.
+             'modulefinder', 'ModuleFinder', 'find_module', 'find_loader', 'imp', 'pyclbr', 'py_compile', 'compileall',
+             'pkg_resources', 'meta_path', 'path_hooks', 'path_importer_cache', 'FileFinder', 'SourceFileLoader',
+             'tabnanny', 'symtable'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
