@@ -751,6 +751,13 @@ class DocstringCheckTest(unittest.TestCase):
                 self.assertFalse(passed)
                 self.assertIn(expected + ', so a docstring can be code.', message)
 
+    def test_a_bytes_path_with_a_non_ascii_name_needs_a_review(self):
+        path = 'src/auth/\u00e9.py'
+        tree = {path: STORE_DOCS, 'tools/run.py': b'run(b"sh src/auth/\\xc3\\xa9.py")\n'}
+        passed, message, _ = self.run_check(path=path, files=(path,), tree=tree)
+        self.assertFalse(passed)
+        self.assertIn('tools/run.py names the file \\u00e9.py', message)
+
     def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
         tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
                 'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',

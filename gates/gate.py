@@ -900,13 +900,14 @@ def python_reader(tree, changed, files):
         if isinstance(node, ast.Constant) and node.value in ORIGIN_NAMES:
             return 'names %s in a string' % node.value
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
-            text = node.value if isinstance(node.value, str) else node.value.decode('latin-1')
+            # Compare bytes, with each name in UTF-8. A str value can have a lone surrogate.
+            raw = node.value if isinstance(node.value, bytes) else node.value.encode('utf-8', 'surrogatepass')
             # A command string can name the file at each place, for example "cat src/auth/store.py | sh".
-            name = next((x for x in sorted(files) if x in text), None)
+            name = next((x for x in sorted(files) if x.encode() in raw), None)
             if name:
                 return 'names the file %s' % show(name)
             # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
-            if DOC_WORDS.search(text.encode('utf-8', 'surrogateescape')):
+            if DOC_WORDS.search(raw):
                 return 'names a docstring reader in a string'
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [x.name for x in node.names] if isinstance(node, ast.Import)
