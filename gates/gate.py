@@ -967,6 +967,11 @@ def python_reader(tree, changed, files):
         found = {x.split('.')[0] for x in names} & DOC_NAMES
         if found:
             return 'names %s' % sorted(found)[0]
+        # A name that contains a reader word is also a reader, for example xdoctest or doctest_module. The rules above
+        # check a bare __doc__ or __file__, which names its own module.
+        word = next((x for x in names if x not in ('__doc__', '__file__') and DOC_WORDS.search(x.encode())), None)
+        if word:
+            return 'names %s' % word
     return None
 
 
