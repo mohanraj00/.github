@@ -943,6 +943,15 @@ class DocstringCheckTest(unittest.TestCase):
             'log exception': ({'tools/run.py': b'log.exception("x")\n'}, 'tools/run.py reads exception of an object'),
             'print exc': ({'tools/run.sh': b'python3 -c "import tb; tb.print_exc()" 2>&1 | sh\n'},
                           'tools/run.sh names a docstring reader'),
+            'shell glob': ({'tools/run.sh': b'sh src/auth/*.py\n'}, 'tools/run.sh names the file store.py with a wildcard'),
+            'class glob': ({'tools/run.sh': b'sh src/auth/st[a-z]re.py\n'},
+                           'tools/run.sh names the file store.py with a wildcard'),
+            'brace glob': ({'tools/run.sh': b'sh src/auth/{store,other}.py\n'},
+                           'tools/run.sh names the file store.py with a wildcard'),
+            'one char glob': ({'tools/run.sh': b'sh src/AUTH/STOR?.PY\n'},
+                              'tools/run.sh names the file store.py with a wildcard'),
+            'python glob': ({'tools/run.py': b'for path in glob("src/auth/*.py"):\n    run(path)\n'},
+                            'tools/run.py names the file store.py with a wildcard'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -1032,6 +1041,13 @@ class DocstringCheckTest(unittest.TestCase):
                        b'x = open(PATH, "r", -1, "ascii")\n'):
             with self.subTest(source=source):
                 self.assertIsNone(gate.python_reader(gate.ast.parse(source), False, ['src/auth/store.py']))
+
+    def test_a_list_mark_or_a_product_is_not_a_glob(self):
+        tree = {STORE: STORE_DOCS, 'docs/a.md': b'# Title\n\n* One item.\n- Two items.\n**Bold** text.\n',
+                'web/a.js': b'/* A block. */\n/**\n * A doc.\n */\nlet a = b * c;\n', '.gitignore': b'*.py[cod]\n*.py\n',
+                'tools/run.sh': b'cp build/*.whl dist/\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
 
     def test_an_ignore_file_can_name_the_bytecode_cache(self):
         tree = {STORE: STORE_DOCS, '.gitignore': b'__pycache__/\n*.pyc\n'}

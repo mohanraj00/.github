@@ -1071,7 +1071,10 @@ def doc_reader(path, data, changed, files):
     if path in PATH_DATA:
         return None
     name = file_name_in(files, texts)
-    return 'names the file %s%s' % (show(name), where) if name else None
+    if name:
+        return 'names the file %s%s' % (show(name), where)
+    name = glob_name_in(files, texts) if posixpath.basename(path) not in IGNORE_FILES else None
+    return 'names the file %s with a wildcard%s' % (show(name), where) if name else None
 
 
 def python_comments(data):
@@ -1093,6 +1096,59 @@ def file_name_in(files, forms):
     """Return the first name of files that is in one of the byte forms, in each case and Unicode form, else None."""
     texts = [fold(x.decode('utf-8', 'replace')) for x in forms]
     return next((x for x in sorted(files) if any(fold(x) in y for y in texts)), None)
+
+
+# A shell word: a run of characters with no space, quote or shell operator.
+SHELL_WORD = re.compile(r'[^\s\'"`;|&<>()=]+')
+# A list mark at the start of a line, for example "* item" in a doc or " * text" in a block comment, is not a glob.
+LIST_MARK = re.compile(r'(?m)^[ \t]*(?:#[ \t]*)?[*+-][ \t]+')
+
+
+def glob_part(part):
+    """Return a regex for the shell glob, with more matches than the shell gives. A brace with a comma, for example
+    {a,b}, matches each text."""
+    out, index = '', 0
+    while index < len(part):
+        char = part[index]
+        end = part.find(']', index + 2) if char == '[' else part.find('}', index + 1) if char == '{' else -1
+        if char == '*':
+            out += '.*'
+        elif char == '?':
+            out += '.'
+        elif char == '[' and end > 0:
+            body = part[index + 1:end]
+            out += '[' + ('^' + body[1:] if body.startswith('!') else body).replace('\\', '\\\\') + ']'
+            index = end
+        elif char == '{' and end > 0 and ',' in part[index:end]:
+            out += '.*'
+            index = end
+        else:
+            out += re.escape(char)
+        index += 1
+    return out
+
+
+def glob_name_in(files, forms):
+    """Return the first name of files that a shell glob in one of the byte forms can match, else None. A launcher
+    such as "sh src/auth/*.py" runs a listed file with no full name of it. The last part of each glob must not match
+    the name, in each case and Unicode form."""
+    names = sorted(files)
+    for form in forms:
+        text = LIST_MARK.sub(' ', fold(form.decode('utf-8', 'replace')))
+        for word in SHELL_WORD.findall(text):
+            # A block comment mark such as /* or /** is not a glob. A word of only * is a product in most languages, for
+            # example "a * b", so it does not count.
+            if not re.search(r'[*?\[{]', word) or re.fullmatch(r'/\*+|\*+/|\*+', word):
+                continue
+            part = word.rstrip('/').rsplit('/', 1)[-1]
+            try:
+                pattern = re.compile(glob_part(part), re.DOTALL)
+            except re.error:
+                pattern = re.compile('.*', re.DOTALL)
+            name = next((x for x in names if pattern.fullmatch(fold(x))), None)
+            if name:
+                return name
+    return None
 
 
 def is_text(data):
@@ -1208,6 +1264,9 @@ def python_reader(tree, changed, files):
                 return 'names a Windows short name in a string'
             if any(LOG_FIELDS.search(x) for x in forms):
                 return 'names a log record field of the source file in a string'
+            name = glob_name_in(files, forms)
+            if name:
+                return 'names the file %s with a wildcard' % show(name)
         # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
