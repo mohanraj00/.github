@@ -734,7 +734,7 @@ class DocstringCheckTest(unittest.TestCase):
         self.assertFalse(passed)
 
 
-def tarball(files, top='owner-project-aaaaaaa'):
+def tarball(files, top='owner-project-aaaaaaa', links=None):
     """Return the bytes of a tarball like the one of the GitHub API, with a top folder and a link."""
     data = io.BytesIO()
     with gate.tarfile.open(fileobj=data, mode='w:gz') as archive:
@@ -745,9 +745,10 @@ def tarball(files, top='owner-project-aaaaaaa'):
             info = gate.tarfile.TarInfo(top + '/' + path)
             info.size = len(body)
             archive.addfile(info, io.BytesIO(body))
-        link = gate.tarfile.TarInfo(top + '/link.py')
-        link.type, link.linkname = gate.tarfile.SYMTYPE, '/etc/passwd'
-        archive.addfile(link)
+        for path, target in (links or {}).items():
+            link = gate.tarfile.TarInfo(top + '/' + path)
+            link.type, link.linkname = gate.tarfile.SYMTYPE, target
+            archive.addfile(link)
     return data.getvalue()
 
 
@@ -763,6 +764,28 @@ class TreeFilesTest(unittest.TestCase):
     def test_the_tree_has_each_file_without_the_top_folder(self):
         self.assertEqual(self.read(tarball({'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})),
                          {'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})
+
+    def test_a_link_gets_the_content_of_its_target(self):
+        found = self.read(tarball({'shared/reader.txt': b'from a import __doc__\n'},
+                                  links={'reader.py': 'shared/reader.txt', 'two.py': 'reader.py', 'docs': 'shared', 'out.md': '/etc/x'}))
+        self.assertEqual(found['reader.py'], b'from a import __doc__\n')
+        self.assertEqual(found['two.py'], b'from a import __doc__\n')
+        self.assertNotIn('docs', found)
+        self.assertNotIn('out.md', found)
+
+    def test_a_python_link_with_no_target_file_fails_closed(self):
+        for target in ('/etc/passwd', '../outside.py', 'shared', 'loop.py'):
+            with self.subTest(target=target), self.assertRaisesRegex(gate.GateError, 'has no target file'):
+                self.read(tarball({'shared/a.txt': b'x\n'}, links={'loop.py': target}))
+
+    def test_a_hard_link_fails_closed(self):
+        data = io.BytesIO()
+        with gate.tarfile.open(fileobj=data, mode='w:gz') as archive:
+            link = gate.tarfile.TarInfo('top/a.py')
+            link.type, link.linkname = gate.tarfile.LNKTYPE, 'top/b.py'
+            archive.addfile(link)
+        with self.assertRaisesRegex(gate.GateError, 'hard link'):
+            self.read(data.getvalue())
 
     def test_a_large_tree_fails_closed(self):
         cases = {'TARBALL_BYTES': 'larger than 10 bytes', 'TREE_BYTES': 'larger than 10 bytes', 'TREE_FILES': 'more than 2 files'}

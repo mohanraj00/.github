@@ -15,6 +15,7 @@ import io
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import sys
 import tarfile
@@ -361,12 +362,17 @@ class GitHub:
             data = response.read(TARBALL_BYTES + 1)
         if len(data) > TARBALL_BYTES:
             raise GateError('The tarball of %s is larger than %d bytes.' % (ref[:12], TARBALL_BYTES))
-        found, total = {}, 0
+        found, links, total = {}, {}, 0
         with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
             # The limit counts each entry, also the folders and the links.
             for count, member in enumerate(archive, 1):
                 if count > TREE_FILES:
                     raise GateError('The tree of %s has more than %d files.' % (ref[:12], TREE_FILES))
+                if member.islnk():
+                    raise GateError('The tree of %s has a hard link.' % ref[:12])
+                if member.issym():
+                    links[member.name.split('/', 1)[-1]] = member.linkname
+                    continue
                 if not member.isfile():
                     continue
                 total += member.size
@@ -374,6 +380,16 @@ class GitHub:
                     raise GateError('The tree of %s is larger than %d bytes.' % (ref[:12], TREE_BYTES))
                 # The first part of each name is the top folder of the tarball.
                 found[member.name.split('/', 1)[-1]] = archive.extractfile(member).read()
+        # A link gets the content of its target in the tree, so the reader check reads it with the rules of the link path.
+        # A link to a folder keeps the names of the files in the folder. A .py link with no target file fails closed.
+        for path in links:
+            target, hops = path, 0
+            while target in links and hops <= len(links):
+                target, hops = posixpath.normpath(posixpath.join(posixpath.dirname(target), links[target])), hops + 1
+            if target in found:
+                found[path] = found[target]
+            elif path.endswith('.py'):
+                raise GateError('The link %s has no target file in the tree of %s.' % (show(path), ref[:12]))
         return found
 
     def post_comment(self, body):
