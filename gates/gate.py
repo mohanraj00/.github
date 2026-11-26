@@ -70,9 +70,13 @@ BRANCH = re.compile(r'^(claude|codex|agy)/')
 CLAUDE_FAILED = re.compile(re.escape(FAILED) + r'\n\nHead: ([0-9a-f]{40})$')
 CODE_TIME = re.compile(r'\*\*Code Review\*\* \|[^\n]*?<relative-time datetime="([^"]+)">')
 # A label that an admin added in the last FRESH seconds can have a record that a parallel run did not post yet.
-# A run waits at most WAIT seconds for that record, and it does not remove that label.
+# A run waits at most WAIT seconds for that record.
 FRESH = 300
 WAIT = 120
+# The run of the labeled event posts the record, and the Actions queue can delay that run. Thus an admin label with no
+# record newer than its labeled event is pending, and the gate does not remove it, for at most PENDING seconds.
+# A pending label does not count as an approval. After PENDING seconds with no record, the label is stale.
+PENDING = 6 * 3600
 
 # Each check binds an approval record to these labels when the owner adds the label.
 BIND = {
@@ -362,7 +366,9 @@ def bound_heads(gh, label, labels, base):
     """Return (heads, pending) for a label on the PR. heads holds the heads of its records on this base, oldest first.
     A record counts only if an admin added the label last, and only if the record is newer than that labeled event.
     Thus an old record does not count after a user removes the label and adds it again.
-    pending is true if an admin added the label recently and its record is not posted yet. Then do not remove the label."""
+    pending is true if an admin added the label in the last PENDING seconds, and no record of the label for any head
+    or base is newer than that labeled event. Then the run of the labeled event did not post its record yet, so do not
+    remove the label. A record for a different head or base shows that the run posted its record, so the label is stale."""
     if label not in labels:
         return [], False
     last = gh.last_labeled(gh.number, label)
@@ -370,10 +376,11 @@ def bound_heads(gh, label, labels, base):
         return [], False
     waited = 0
     while True:
-        heads = [h for name, h, b, t in read_records(gh.comments()) if name == label and b == base and t and stamp(t) >= stamp(last[1])]
-        fresh = (gh.now() - stamp(last[1])).total_seconds() < FRESH
-        if heads or not fresh or waited >= WAIT:
-            return heads, not heads and fresh
+        records = [(h, b) for name, h, b, t in read_records(gh.comments()) if name == label and t and stamp(t) >= stamp(last[1])]
+        heads = [h for h, b in records if b == base]
+        age = (gh.now() - stamp(last[1])).total_seconds()
+        if records or age >= FRESH or waited >= WAIT:
+            return heads, not records and age < PENDING
         gh.sleep(10)
         waited += 10
 
@@ -552,6 +559,9 @@ def cross_review(gh, pr, comments, changed):
             lines.append('The PR has %d "@codex review" requests. The cap is %d for each PR.' % (count, CODEX_CAP))
             if cap_stale:
                 lines.append('The %s label has no approval record for head %s on base %s. The owner adds the label again.' % (CAP_LABEL, head[:12], base))
+            elif CAP_LABEL in labels:
+                lines.append('The %s label has no approval record yet. The run of the labeled event posts it, and the queue can '
+                             'delay that run. That run checks the PR again.' % CAP_LABEL)
             lines.append('Codex review cap reached. Examine the approach and report to the owner.')
             return False, lines, drop
         if count > CODEX_CAP:
