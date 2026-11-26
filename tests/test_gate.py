@@ -814,6 +814,8 @@ class DocstringCheckTest(unittest.TestCase):
             'type base': ({'tools/meta.py': b'class Runner(type):\n    pass\n'}, 'tools/meta.py defines a metaclass'),
             'abc base': ({'tools/meta.py': b'import abc\nclass Runner(abc.ABCMeta):\n    pass\n'},
                          'tools/meta.py defines a metaclass'),
+            'upper pydoc': ({'bin/run.cmd': b'PYDOC src.auth.store | sh\r\n'}, 'bin/run.cmd names a docstring reader'),
+            'mixed inspect': ({'bin/run.cmd': b'python -c "import Inspect"\r\n'}, 'bin/run.cmd names a docstring reader'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -909,7 +911,7 @@ class DocstringCheckTest(unittest.TestCase):
                 self.assertIn('Docstring check: %s is an archive or a compressed file' % path, message)
 
     def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
-        tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
+        tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Review a PR."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
                 'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',
                 '.github/gates.json': b'{"version": 1, "boundaries": ["src/auth/store.py"]}\n',
                 '.github/CODEOWNERS': b'src/auth/store.py @owner\n',

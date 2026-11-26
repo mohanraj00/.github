@@ -97,14 +97,16 @@ ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__c
 # bare __file__ does.
 SELF_NAMES = {'argv', 'orig_argv', 'filename', 'warnings'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
-# "pytest --doctest-modules".
+# "pytest --doctest-modules". A file system can ignore case, for example "PYDOC src.auth.store", so the words match in
+# each case.
 DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
                        rb'|doctest|__file__|__spec__|__code__|co_consts|find_spec|importlib|pkgutil|inspect|runpy'
                        # A docs generator publishes the docstrings, for example Sphinx autodoc or mkdocstrings.
                        rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe'
                        # A shell can run Python, for example python3 -c "vars(store)". Thus each name of the Python
                        # rules is also a word, at word boundaries, so the two lists cannot drift apart.
-                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(DOC_NAMES | ORIGIN_NAMES)) + rb')\b')
+                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(DOC_NAMES | ORIGIN_NAMES)) + rb')\b',
+                       re.IGNORECASE)
 # The signatures of a zip file, at any place, and of other compressed files, at the start.
 ZIP = re.compile(rb'PK\x03\x04|PK\x05\x06|PK\x06\x06')
 COMPRESSED = (b'\x1f\x8b', b'BZh', b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b"7z\xbc\xaf\x27\x1c")
