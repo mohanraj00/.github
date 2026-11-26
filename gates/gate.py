@@ -67,22 +67,27 @@ PIN_FILE = '.github/workflows/gates.yml'
 TARBALL_BYTES = 64 * 1024 * 1024
 TREE_BYTES = 256 * 1024 * 1024
 TREE_FILES = 20000
-# A docstring is code if a file of the head tree reads it. A .py file that names one of these reads docstrings or source
-# files, or makes the help text of a command from the docstrings.
+# A docstring is code if a file of the head tree reads it. A Python file that names one of these reads docstrings or
+# source files, runs text as code, or makes the help text of a command or a grammar from the docstrings. The names are
+# modules and functions, so a new function of the module "inspect" or "ast" also counts.
 DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'getsourcefile', 'getfile',
-             'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click', 'typer', 'fire',
-             'find_spec', 'get_filename', 'importlib', 'pkgutil'}
+             'getabsfile', 'getmodule', 'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click',
+             'typer', 'fire', 'docopt', 'ply', 'find_spec', 'get_filename', 'importlib', 'pkgutil', 'inspect', 'ast',
+             'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin". An
 # attribute or a string with one of these names counts in each file.
 ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
 # "pytest --doctest-modules".
-DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|linecache|pydoc|doctest'
-                       rb'|__file__|__spec__|find_spec|importlib|pkgutil')
+DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
+                       rb'|doctest|__file__|__spec__|find_spec|importlib|pkgutil|inspect|runpy')
 # A file with one of these extensions, or with a #! line that names python, is Python.
 PYTHON = re.compile(rb'#![^\n]*python')
+# Python runs a file with each name, so a doc or a config that parses as Python is Python. A doc or a config that does
+# not parse is not code, and the gate does not read it.
 DOC_TEXT = ('.md', '.rst', '.txt')
-# These files name paths, but no tool runs them as code. The project config names its boundary files.
+# These files name paths. The project config names its boundary files. If such a file parses as Python, it can have only
+# literal values, for example JSON.
 PATH_DATA = {'.github/gates.json', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS', '.gitattributes', '.gitignore'}
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
@@ -827,20 +832,39 @@ def text_without_docstrings(data):
     return encoding, text
 
 
+def literal_tree(tree):
+    """Return True if the tree has only literal values, for example the tree of a JSON file."""
+    return all(isinstance(node, (ast.Module, ast.Expr, ast.Constant, ast.Dict, ast.List, ast.Tuple, ast.Set, ast.Load,
+                                 ast.UnaryOp, ast.USub)) or (isinstance(node, ast.Name) and node.id in ('true', 'false', 'null'))
+               for node in ast.walk(tree))
+
+
 def doc_reader(path, data, changed, files):
     """Return the reason if the file can read a docstring, else None. A bare __doc__ or __file__ names its own module
-    only, so it counts only in a changed file. A string that ends with the name of a changed file can open it."""
-    if not path.endswith(('.py', '.pyw')) and not PYTHON.match(data):
-        if path.endswith(DOC_TEXT) or path in PATH_DATA:
-            return None
-        if DOC_WORDS.search(data):
-            return 'names a docstring reader'
-        name = next((x for x in sorted(files) if x.encode() in data), None)
-        return 'names the file %s' % show(name) if name else None
+    only, so it counts only in a changed file. A string that ends with the name of a changed file can open it. Python
+    can run a file with each name, so each file that parses gets the Python rules. Each file that is not Python also
+    gets the word rules, because a shell or a config can run a reader."""
+    python = path.endswith(('.py', '.pyw')) or PYTHON.match(data)
     try:
         tree = ast.parse(data)
     except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
-        return 'does not parse at the head (%s)' % type(error).__name__
+        if python:
+            return 'does not parse at the head (%s)' % type(error).__name__
+        tree = None
+    if tree is not None and not (path in PATH_DATA and literal_tree(tree)):
+        reason = python_reader(tree, changed, files)
+        if reason:
+            return reason
+    if python or path.endswith(DOC_TEXT) or path in PATH_DATA:
+        return None
+    if DOC_WORDS.search(data):
+        return 'names a docstring reader'
+    name = next((x for x in sorted(files) if x.encode() in data), None)
+    return 'names the file %s' % show(name) if name else None
+
+
+def python_reader(tree, changed, files):
+    """Return the reason if the Python tree can read a docstring, else None."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr == '__doc__':
             return 'reads __doc__ of an object'
