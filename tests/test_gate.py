@@ -27,7 +27,9 @@ PIN_OLD, PIN_NEW = 'd' * 40, 'e' * 40
 TEMPLATE = (ROOT / '.github/pull_request_template.md').read_text()
 FILLED = 'Closes #5\n\n## Testing\n\n`make check`: 10 tests pass.\n\n## Risk\n\nLow. Level 0.\n\n## How to revert\n\nRevert the commit.\n'
 CONFIG = {'code': ['src/*', 'tests/*'], 'security_sources': ['src/*.py'], 'not_security': ['*/test_*.py'],
-          'boundaries': ['tools/*', 'src/auth/*'], 'level1': ['tools/*', 'SPEC.md'], 'generated': ['gen/*']}
+          'boundaries': ['tools/*', 'src/auth/*'], 'level1': ['tools/*', 'SPEC.md'], 'generated': ['gen/*'], 'docstring_only': []}
+# The owner turns on the docstring check for these paths.
+DOC_CONFIG = CONFIG | {'docstring_only': ['src/*', 'tools/*', '.github/workflows/*']}
 CLEAN_RECEIPT = ('<!-- codex-review-receipt:v1 -->\n\n### 🛡️ Codex Security Review\n\nSecurity review completed. '
                  'No security issues were found in this pull request.\n\n**Reviewed commit:** `%s`\n')
 OPEN_RECEIPT = '### 🛡️ Codex Security Review\n\nSecurity review completed. 1 issue was found.\n\n**Reviewed commit:** `%s`\n'
@@ -196,8 +198,8 @@ def event(action='opened', label=None, head=HEAD, sender='mohanraj00'):
     return found
 
 
-def check(name, fake, ev=None):
-    passed, lines, outputs = gate.run(name, fake, ev or event(), CONFIG, TEMPLATE)
+def check(name, fake, ev=None, config=CONFIG):
+    passed, lines, outputs = gate.run(name, fake, ev or event(), config, TEMPLATE)
     return passed, '\n'.join(lines), outputs
 
 
@@ -586,7 +588,26 @@ class DocstringCheckTest(unittest.TestCase):
         fake = Fake(files=files, contents=contents, labels=labels)
         fake.modes = modes or {}
         fake.tree = {path: new, 'tools/run.py': b'import argparse\n'} if tree is None else tree
-        return check('security-review', fake)
+        return check('security-review', fake, config=DOC_CONFIG)
+
+    def test_the_check_is_off_with_no_docstring_only_paths(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=(STORE,), contents=contents)
+        fake.tree = {STORE: STORE_DOCS}
+        passed, message, _ = check('security-review', fake)
+        self.assertFalse(passed)
+        self.assertNotIn('Docstring check', message)
+        self.assertIsNone(fake.__dict__.get('tree_ref'))
+        self.assertIn('@codex security review', message)
+
+    def test_a_listed_path_outside_docstring_only_needs_a_review(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=(STORE,), contents=contents)
+        fake.tree = {STORE: STORE_DOCS}
+        passed, message, _ = check('security-review', fake, config=CONFIG | {'docstring_only': ['src/api/*']})
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: src/auth/store.py is not in "docstring_only" of the project config.', message)
+        self.assertIsNone(fake.__dict__.get('tree_ref'))
 
     def test_a_docstring_only_change_passes_with_no_review(self):
         passed, message, output = self.run_check()
@@ -669,7 +690,7 @@ class DocstringCheckTest(unittest.TestCase):
 
     def test_a_missing_file_needs_a_review(self):
         fake = Fake(files=[STORE], contents={(REPO, STORE, HEAD): STORE_DOCS})
-        passed, message, _ = check('security-review', fake)
+        passed, message, _ = check('security-review', fake, config=DOC_CONFIG)
         self.assertFalse(passed)
         self.assertIn('Cannot read src/auth/store.py at the base or the head.', message)
 
@@ -793,7 +814,7 @@ class DocstringCheckTest(unittest.TestCase):
         contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
         fake = Fake(files=[STORE], contents=contents)
         fake.tree = {STORE: STORE_DOCS, 'src/base_only.py': b'from src.auth.store import __doc__\n'}
-        passed, message, _ = check('security-review', fake)
+        passed, message, _ = check('security-review', fake, config=DOC_CONFIG)
         self.assertFalse(passed)
         self.assertEqual(fake.tree_ref, MERGE)
         self.assertIn('src/base_only.py imports __doc__ of a module', message)
@@ -804,7 +825,7 @@ class DocstringCheckTest(unittest.TestCase):
                 contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
                 fake = Fake(files=[STORE], contents=contents)
                 fake.state['merge_commit_sha'] = merge
-                passed, message, _ = check('security-review', fake)
+                passed, message, _ = check('security-review', fake, config=DOC_CONFIG)
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: GitHub has no test merge commit of the base ffffffffffff and the head aaaaaaaaaaaa.', message)
 

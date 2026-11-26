@@ -150,7 +150,7 @@ SHARED_CATEGORIES = [('GitHub config', ['.github/*']),
                      ('agent instructions', anywhere(AGENT_FILES)),
                      ('agent config', anywhere(['.agents/*', '.claude/*', '.codex/*', '.gemini/*'])),
                      ('dependency manifest', anywhere(MANIFESTS))]
-CONFIG_KEYS = ['code', 'security_sources', 'not_security', 'boundaries', 'level1', 'generated']
+CONFIG_KEYS = ['code', 'security_sources', 'not_security', 'boundaries', 'level1', 'generated', 'docstring_only']
 
 
 class GateError(Exception):
@@ -1013,15 +1013,23 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
             return (True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, [],
                     'Security review: not needed. Each listed path is a proved copy or pin change.')
         lines.append('Copy check: ' + reason)
-        # A change of only the docstring text in listed .py files needs no review. The code does not change.
-        try:
-            proved, reason = docstring_check(gh, pr, listed, files)
-        except (OSError, GateError, KeyError, TypeError, ValueError, tarfile.TarError) as error:
-            proved, reason = None, 'The docstring check failed closed (%s: %s).' % (type(error).__name__, show(error))
-        if proved:
-            return (True, ['Each listed path changes only the text of docstrings. No review is necessary.'] + proved, [],
-                    'Security review: not needed. Only docstrings changed in a listed path.')
-        lines.append('Docstring check: ' + reason)
+        # A change of only the docstring text in listed .py files needs no review. The code does not change. The owner
+        # turns this on for each path in "docstring_only" of the project config, after the owner confirms that no tool
+        # of the project reads those docstrings. The config comes from the base branch, so a PR cannot turn it on. The
+        # proof below is a second layer: it finds the usual readers, but no list of names can find each reader.
+        if config['docstring_only']:
+            outside = next((x for x in listed if not match(x, config['docstring_only'])), None)
+            if outside:
+                proved, reason = None, '%s is not in "docstring_only" of the project config.' % show(outside)
+            else:
+                try:
+                    proved, reason = docstring_check(gh, pr, listed, files)
+                except (OSError, GateError, KeyError, TypeError, ValueError, tarfile.TarError) as error:
+                    proved, reason = None, 'The docstring check failed closed (%s: %s).' % (type(error).__name__, show(error))
+            if proved:
+                return (True, ['Each listed path changes only the text of docstrings. No review is necessary.'] + proved, [],
+                        'Security review: not needed. Only docstrings changed in a listed path.')
+            lines.append('Docstring check: ' + reason)
     if not complete:
         lines.append('The PR has more files than GitHub lists, so the change is security relevant.')
     if listed:
