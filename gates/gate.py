@@ -104,7 +104,10 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # These standard APIs return a docstring: unittest gives the docstring of a test, cmd.Cmd prints the
              # docstring of a command, and XML-RPC introspection returns the docstring of a method.
              'shortDescription', '_testMethodDoc', 'getDescription', 'do_help', 'system_methodHelp',
-             'register_introspection_functions', 'DocXMLRPCServer', 'DocXMLRPCRequestHandler', 'idlelib'}
+             'register_introspection_functions', 'DocXMLRPCServer', 'DocXMLRPCRequestHandler', 'idlelib',
+             # A test runner prints the docstring of each test in verbose mode, for example "python -m unittest -v".
+             'unittest', 'TextTestRunner', 'TestProgram', 'nose', 'nose2', 'green', 'trial', 'testtools', 'stestr',
+             'subunit'}
 # The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
 # with other underscores, for example __dir__.
 BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
