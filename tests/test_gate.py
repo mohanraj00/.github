@@ -831,6 +831,17 @@ class DocstringCheckTest(unittest.TestCase):
                 self.assertFalse(passed)
                 self.assertIn('tools/run.txt names the file \\u00e9.py', message)
 
+    def test_a_file_name_in_another_case_or_form_needs_a_review(self):
+        cases = {'python upper': ('tools/run.py', b'open("src/auth/STORE.PY").read()\n'),
+                 'shell upper': ('bin/run.sh', b'cat SRC/AUTH/Store.py | sh\n'),
+                 'nfd': ('bin/run.sh', 'cat src/auth/e\u0301.py | sh\n'.encode())}
+        for name, (reader, data) in cases.items():
+            with self.subTest(name):
+                path = 'src/auth/\u00e9.py' if name == 'nfd' else STORE
+                passed, message, _ = self.run_check(path=path, files=(path,), tree={path: STORE_DOCS, reader: data})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: %s names the file' % reader, message)
+
     def test_a_link_or_a_copy_of_a_listed_file_needs_a_review(self):
         passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'payload': STORE_DOCS})
         self.assertFalse(passed)

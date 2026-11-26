@@ -22,6 +22,7 @@ import sys
 import tarfile
 import time
 import tokenize
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -899,8 +900,20 @@ def doc_reader(path, data, changed, files):
         return 'names a docstring reader'
     if path in PATH_DATA:
         return None
-    name = next((x for x in sorted(files) if any(x.encode() in y for y in texts)), None)
+    name = file_name_in(files, texts)
     return 'names the file %s' % show(name) if name else None
+
+
+def fold(text):
+    """Return the text in one case and one Unicode form. A file system can ignore the case of a name, for example on
+    Windows, or change its Unicode form, for example on macOS."""
+    return unicodedata.normalize('NFKC', unicodedata.normalize('NFKC', text).casefold())
+
+
+def file_name_in(files, forms):
+    """Return the first name of files that is in one of the byte forms, in each case and Unicode form, else None."""
+    texts = [fold(x.decode('utf-8', 'replace')) for x in forms]
+    return next((x for x in sorted(files) if any(fold(x) in y for y in texts)), None)
 
 
 def text_forms(data):
@@ -941,7 +954,7 @@ def python_reader(tree, changed, files):
             # Compare bytes, with each name in UTF-8. A str value can have a lone surrogate.
             raw = node.value if isinstance(node.value, bytes) else node.value.encode('utf-8', 'surrogatepass')
             # A command string can name the file at each place, for example "cat src/auth/store.py | sh".
-            name = next((x for x in sorted(files) if x.encode() in raw), None)
+            name = file_name_in(files, [raw])
             if name:
                 return 'names the file %s' % show(name)
             # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
