@@ -731,14 +731,28 @@ def tarball(files, top='owner-project-aaaaaaa', links=None):
     return data.getvalue()
 
 
+def git_tree(data):
+    """Return the Git tree of the GitHub API for the tarball."""
+    found = []
+    with gate.tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+        for x in archive:
+            if '/' not in x.name:
+                continue
+            item = {'path': x.name.split('/', 1)[-1], 'type': 'tree' if x.isdir() else 'blob', 'mode': '120000' if x.issym() else '100644'}
+            if x.issym():
+                item['sha'] = gate.blob_sha(x.linkname.encode())
+            elif x.isfile():
+                item['sha'] = gate.blob_sha(archive.extractfile(x).read())
+            found.append(item)
+    return {'truncated': False, 'tree': found}
+
+
 class TreeFilesTest(unittest.TestCase):
     def read(self, data, tree=None):
         response = mock.MagicMock()
         response.__enter__.return_value.read.side_effect = lambda size: data[:size]
         if tree is None:
-            with gate.tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
-                tree = {'truncated': False, 'tree': [{'path': x.name.split('/', 1)[-1], 'type': 'tree' if x.isdir() else 'blob'}
-                                                     for x in archive if '/' in x.name]}
+            tree = git_tree(data)
         with mock.patch.object(gate.urllib.request, 'urlopen', return_value=response) as opened, \
                 mock.patch.object(gate.GitHub, 'call', return_value=tree) as call:
             found = gate.GitHub(REPO, 7, 'token').tree_files(HEAD)
@@ -774,11 +788,15 @@ class TreeFilesTest(unittest.TestCase):
 
     def test_a_tree_that_does_not_agree_with_the_tarball_fails_closed(self):
         data = tarball({'src/a.py': b'x = 1\n'})
-        blob = {'path': 'src/a.py', 'type': 'blob'}
+        blob = {'path': 'src/a.py', 'type': 'blob', 'mode': '100644', 'sha': gate.blob_sha(b'x = 1\n')}
         cases = {'export-ignore': ({'truncated': False, 'tree': [blob, {'path': 'reader.py', 'type': 'blob'}]}, 'does not have reader.py'),
                  'submodule': ({'truncated': False, 'tree': [blob, {'path': 'lib', 'type': 'commit'}]}, 'has a submodule'),
                  'truncated': ({'truncated': True, 'tree': [blob]}, 'did not give the full Git tree'),
-                 'no list': ({'truncated': False}, 'did not give the full Git tree')}
+                 'no list': ({'truncated': False}, 'did not give the full Git tree'),
+                 'export-subst': ({'truncated': False, 'tree': [blob | {'mode': '100644', 'sha': gate.blob_sha(b'x = $Format:%B$\n')}]},
+                                  'changes src/a.py, for example by export-subst'),
+                 'file as link': ({'truncated': False, 'tree': [blob | {'mode': '120000', 'sha': gate.blob_sha(b'x = 1\n')}]},
+                                  'gives src/a.py as a different kind of file')}
         for name, (tree, expected) in cases.items():
             with self.subTest(name), self.assertRaisesRegex(gate.GateError, expected):
                 self.read(data, tree)

@@ -374,6 +374,7 @@ class GitHub:
                     raise GateError('The tree of %s is larger than %d bytes.' % (ref[:12], TREE_BYTES))
                 # The first part of each name is the top folder of the tarball.
                 found[member.name.split('/', 1)[-1]] = archive.extractfile(member).read()
+        raw = dict(found)
         # A link gets the content of its target in the tree, so the reader check reads it with the rules of the link path.
         # A link to a folder keeps the names of the files in the folder. A .py link with no target file fails closed.
         for path in links:
@@ -394,6 +395,17 @@ class GitHub:
         missing = sorted({x.get('path') for x in tree['tree'] if x.get('type') == 'blob'} - set(found) - set(links))
         if missing:
             raise GateError('The tarball of %s does not have %s, for example by export-ignore.' % (ref[:12], show(missing[0])))
+        # The tarball can change the bytes of a file, for example by export-subst or an eol rule. Thus each file and link
+        # of the tarball must have the blob SHA of the Git tree.
+        for item in tree['tree']:
+            path = item.get('path')
+            if item.get('type') != 'blob':
+                continue
+            link = item.get('mode') == '120000'
+            if link != (path in links):
+                raise GateError('The tarball of %s gives %s as a different kind of file.' % (ref[:12], show(path)))
+            if blob_sha(links[path].encode() if link else raw[path]) != item.get('sha'):
+                raise GateError('The tarball of %s changes %s, for example by export-subst.' % (ref[:12], show(path)))
         return found
 
     def post_comment(self, body):
