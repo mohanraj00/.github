@@ -970,17 +970,26 @@ def doc_reader(path, data, changed, files):
         reason = python_reader(tree, changed, files)
         if reason:
             return reason
-    if python:
-        return None
-    texts = text_forms(data)
+    # The tree of a Python file has no comments, but another program can read a comment, for example "#include" of
+    # cpp. Thus the word rules also read the comments of a Python file.
+    texts, where = ([python_comments(data)], ' in a comment') if python else (text_forms(data), '')
     if any(DOC_WORDS.search(x) for x in texts):
-        return 'names a docstring reader'
+        return 'names a docstring reader' + where
     if posixpath.basename(path) not in IGNORE_FILES and any(CACHE_WORDS.search(x) for x in texts):
-        return 'names the bytecode cache'
+        return 'names the bytecode cache' + where
     if path in PATH_DATA:
         return None
     name = file_name_in(files, texts)
-    return 'names the file %s' % show(name) if name else None
+    return 'names the file %s%s' % (show(name), where) if name else None
+
+
+def python_comments(data):
+    """Return the comments of the Python source, one on each line. If the source does not tokenize, return all of it."""
+    try:
+        return b'\n'.join(x.string.encode('utf-8') for x in tokenize.tokenize(io.BytesIO(data).readline)
+                          if x.type == tokenize.COMMENT)
+    except (tokenize.TokenError, SyntaxError, ValueError, UnicodeDecodeError):
+        return data
 
 
 def fold(text):
