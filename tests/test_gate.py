@@ -1,5 +1,6 @@
 """The shared gates pass and fail as the project standard says. The tests use a fake GitHub API and no network."""
 import contextlib
+import gzip
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'gates'))
@@ -22,11 +24,14 @@ OLD = 'b' * 40
 BASE = 'c' * 40
 # The tip of the base branch, and two SHAs of the gates action.
 TIP = 'f' * 40
+MERGE = '9' * 40
 PIN_OLD, PIN_NEW = 'd' * 40, 'e' * 40
 TEMPLATE = (ROOT / '.github/pull_request_template.md').read_text()
 FILLED = 'Closes #5\n\n## Testing\n\n`make check`: 10 tests pass.\n\n## Risk\n\nLow. Level 0.\n\n## How to revert\n\nRevert the commit.\n'
 CONFIG = {'code': ['src/*', 'tests/*'], 'security_sources': ['src/*.py'], 'not_security': ['*/test_*.py'],
-          'boundaries': ['tools/*', 'src/auth/*'], 'level1': ['tools/*', 'SPEC.md'], 'generated': ['gen/*']}
+          'boundaries': ['tools/*', 'src/auth/*'], 'level1': ['tools/*', 'SPEC.md'], 'generated': ['gen/*'], 'docstring_only': []}
+# The owner turns on the docstring check for these paths.
+DOC_CONFIG = CONFIG | {'docstring_only': ['src/*', 'tools/*', '.github/workflows/*']}
 CLEAN_RECEIPT = ('<!-- codex-review-receipt:v1 -->\n\n### 🛡️ Codex Security Review\n\nSecurity review completed. '
                  'No security issues were found in this pull request.\n\n**Reviewed commit:** `%s`\n')
 OPEN_RECEIPT = '### 🛡️ Codex Security Review\n\nSecurity review completed. 1 issue was found.\n\n**Reviewed commit:** `%s`\n'
@@ -70,9 +75,11 @@ class Fake:
         self.slept = 0
         self.state = {'labels': [{'name': x} for x in labels], 'body': body, 'user': {'login': author},
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
-                      'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}}
+                      'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}, 'merge_commit_sha': MERGE}
         self.contents = contents or {}
         self.mains = set(on_main)
+        self.tree = {}
+        self.modes = {}
         self.file_list = [{'path': x, 'previous': None, 'status': 'modified', 'lines': 10} if isinstance(x, str) else x for x in files]
         self.complete = complete
         self.comment_list = list(comments)
@@ -146,13 +153,26 @@ class Fake:
         return self.current_base
 
     def content(self, repo, path, ref):
-        data = self.contents.get((repo, path, ref))
+        # The test merge has the files of the head in these tests.
+        data = self.contents.get((repo, path, HEAD if ref == MERGE else ref))
         if isinstance(data, Exception):
             raise data
         return (gate.blob_sha(data), data) if data is not None else None
 
     def on_main(self, repo, commit):
         return repo == gate.UPSTREAM and commit in self.mains
+
+    def mode(self, ref, path):
+        return self.modes.get((ref, path), '100644')
+
+    def parents(self, commit):
+        return [TIP, HEAD] if commit == MERGE else []
+
+    def tree_files(self, ref):
+        self.tree_ref = ref
+        if isinstance(self.tree, Exception):
+            raise self.tree
+        return self.tree
 
     def workflow_run(self, run_id):
         return dict(TRUSTED_RUN) if self.runs is None else self.runs.get(run_id)
@@ -180,8 +200,8 @@ def event(action='opened', label=None, head=HEAD, sender='mohanraj00'):
     return found
 
 
-def check(name, fake, ev=None):
-    passed, lines, outputs = gate.run(name, fake, ev or event(), CONFIG, TEMPLATE)
+def check(name, fake, ev=None, config=CONFIG):
+    passed, lines, outputs = gate.run(name, fake, ev or event(), config, TEMPLATE)
     return passed, '\n'.join(lines), outputs
 
 
@@ -545,6 +565,702 @@ class CopyCheckTest(unittest.TestCase):
 
     def test_the_blob_sha_is_the_git_value(self):
         self.assertEqual(gate.blob_sha(b''), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391')
+
+
+STORE = 'src/auth/store.py'
+STORE_OLD = b'''#!/usr/bin/env python3
+"""The store."""
+import os  # noqa: F401
+
+
+class Store:
+    """The rows."""
+
+    def rows(self, n):
+        """Return the rows."""
+        return self.data[:n]
+'''
+STORE_DOCS = STORE_OLD.replace(b'Return the rows.', b'Return the rows of the open snapshot.\n\n        The rows are a list.')
+TOKENS = 'src/auth/store.py changes a byte outside the docstrings, or adds or removes a docstring.'
+
+
+class DocstringCheckTest(unittest.TestCase):
+    def run_check(self, new=STORE_DOCS, old=STORE_OLD, files=(STORE,), tree=None, labels=(), path=STORE, modes=None):
+        contents = {(REPO, path, TIP): old, (REPO, path, HEAD): new}
+        fake = Fake(files=files, contents=contents, labels=labels)
+        fake.modes = modes or {}
+        fake.tree = {path: new, 'tools/run.py': b'import argparse\n'} if tree is None else tree
+        return check('security-review', fake, config=DOC_CONFIG)
+
+    def test_the_check_is_off_with_no_docstring_only_paths(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=(STORE,), contents=contents)
+        fake.tree = {STORE: STORE_DOCS}
+        passed, message, _ = check('security-review', fake)
+        self.assertFalse(passed)
+        self.assertNotIn('Docstring check', message)
+        self.assertIsNone(fake.__dict__.get('tree_ref'))
+        self.assertIn('@codex security review', message)
+
+    def test_a_listed_path_outside_docstring_only_needs_a_review(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=(STORE,), contents=contents)
+        fake.tree = {STORE: STORE_DOCS}
+        passed, message, _ = check('security-review', fake, config=CONFIG | {'docstring_only': ['src/api/*']})
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: src/auth/store.py is not in "docstring_only" of the project config.', message)
+        self.assertIsNone(fake.__dict__.get('tree_ref'))
+
+    def test_a_docstring_only_change_passes_with_no_review(self):
+        passed, message, output = self.run_check()
+        self.assertTrue(passed, message)
+        self.assertIn('Each listed path changes only the text of docstrings. No review is necessary.', message)
+        self.assertIn('src/auth/store.py: only the text of docstrings changes.', message)
+        self.assertEqual(output, {'summary': 'Security review: not needed. Only docstrings changed in a listed path.'})
+
+    def test_a_docstring_that_a_traceback_can_print_needs_a_review(self):
+        # A traceback prints the lines of the instruction that fails. A class statement has all of its lines.
+        line = 'has a changed docstring on a line with other code, and a traceback can print the line.'
+        cases = {'code before': ('def f(x="é"): "Doc."\n'.encode(), line),
+                 'code after': (b'def f():\n    "Doc."; fail()\n', line),
+                 'continuation': (b'def f():\n    "Doc." \\\n    ; fail()\n', line),
+                 'class': (b'class Store(Base):\n    """Doc."""\n    rows = 1\n',
+                           'changes the docstring of the class Store, and a traceback of the class statement prints it.'),
+                 'lone cr': (b'def f():\n    "Doc."\r    return 1\n', 'has a line break \\r with no \\n.'),
+                 'escape warning': (b'def f():\n    "Doc."\n', 'gives a compile warning (SyntaxWarning), and Python prints its source line.')}
+        for name, (old, expected) in cases.items():
+            with self.subTest(name):
+                new = old.replace(b'Doc.', b'Doc \\q.' if name == 'escape warning' else b'Doc two.')
+                passed, message, _ = self.run_check(old=old, new=new)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py ' + expected, message)
+
+    def test_a_docstring_with_a_comment_on_its_line_passes(self):
+        old = b'"""Doc."""  # The module.\n\nclass Store:\n    """Same."""\n\n    def rows(self):\n        "Doc."\n'
+        passed, message, _ = self.run_check(old=old, new=old.replace(b'Doc.', b'Doc two.'))
+        self.assertTrue(passed, message)
+
+    def test_a_comment_or_line_change_needs_a_review(self):
+        old = (b'# /// script\n# dependencies = ["safe-package"]\n# ///\nimport subprocess\n\n'
+               b'def f(command):\n    # nosemgrep\n    """Run."""\n    return subprocess.run(command, shell=True)  # Run it.\n')
+        cases = {'comment on code': old.replace(b'# Run it.', b'# Run the command.'),
+                 'nosemgrep on code': old.replace(b'# Run it.', b'# Run it. nosemgrep'),
+                 'own line comment': old.replace(b'    # nosemgrep\n', b'    # The command.\n'),
+                 'added comment': old.replace(b'import subprocess', b'# A comment.\nimport subprocess'),
+                 'script metadata': old.replace(b'safe-package', b'other-package'),
+                 'start line': b'#!/usr/bin/env python3\n' + old,
+                 'removed docstring': old.replace(b'    """Run."""\n', b''),
+                 'added docstring': b'"""New."""\n' + old,
+                 'removed blank line': old.replace(b'subprocess\n\n', b'subprocess\n'),
+                 'new line break': old.replace(b'(command, shell=True)', b'(command,\n                          shell=True)'),
+                 'moved comment': old.replace(b'  # Run it.', b'').replace(b'    # nosemgrep', b'    # nosemgrep  # Run it.'),
+                 'backslash line': old.replace(b'return subprocess', b'return \\\n        subprocess'),
+                 'new space': old.replace(b'(command, shell', b'(command,  shell'),
+                 'crlf': old.replace(b'\n', b'\r\n')}
+        for name, new in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: ' + TOKENS, message)
+
+    def test_a_mode_change_or_no_change_needs_a_review(self):
+        passed, message, _ = self.run_check(new=STORE_OLD)
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: src/auth/store.py changes no byte, so the change is not a docstring change.', message)
+        for modes in ({(MERGE, STORE): '100755'}, {(TIP, STORE): None}, {(TIP, STORE): '120000', (MERGE, STORE): '120000'}):
+            with self.subTest(modes=modes):
+                passed, message, _ = self.run_check(modes=modes)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: src/auth/store.py changes its file mode, or it is not a regular file.', message)
+
+    def test_a_listed_file_that_runs_as_another_program_needs_a_review(self):
+        bare_old, bare_new = STORE_OLD.split(b'\n', 1)[1], STORE_DOCS.split(b'\n', 1)[1]
+        executable = {(TIP, STORE): '100755', (MERGE, STORE): '100755'}
+        cases = {'shell line': (b'#!/bin/sh\n' + bare_old, b'#!/bin/sh\n' + bare_new, {}),
+                 'executable with no line': (bare_old, bare_new, executable),
+                 'env split': (b"#!/usr/bin/env -S sh -c 'sh \"$1\"' python\n" + bare_old,
+                               b"#!/usr/bin/env -S sh -c 'sh \"$1\"' python\n" + bare_new, executable),
+                 'python in a path': (b'#!/bin/sh /opt/python\n' + bare_old, b'#!/bin/sh /opt/python\n' + bare_new, {}),
+                 'command flag': (b'#!/usr/bin/python3 -c\n' + bare_old, b'#!/usr/bin/python3 -c\n' + bare_new, {})}
+        for name, (old, new, modes) in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new, modes=modes)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: src/auth/store.py can run as a program that is not Python.', message)
+        for line in (b'#!/usr/bin/env python3\n', b'#! /usr/bin/python3.12 -u\n', b'#!/usr/local/bin/python\n'):
+            with self.subTest(line=line):
+                passed, message, _ = self.run_check(old=line + bare_old, new=line + bare_new, modes=executable)
+                self.assertTrue(passed, message)
+
+    def test_a_source_encoding_that_is_not_utf8_needs_a_review(self):
+        for cookie in (b'# -*- coding: unicode_escape -*-\n', b'# -*- coding: latin-1 -*-\n'):
+            with self.subTest(cookie=cookie):
+                passed, message, _ = self.run_check(old=cookie + STORE_OLD, new=cookie + STORE_DOCS)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py does not parse at the base or the head (ValueError)', message)
+
+    def test_a_bom_change_needs_a_review(self):
+        passed, message, _ = self.run_check(new=b'\xef\xbb\xbf' + STORE_DOCS)
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: ' + TOKENS, message)
+
+    def test_a_code_change_with_a_docstring_change_needs_a_review(self):
+        passed, message, _ = self.run_check(new=STORE_DOCS.replace(b'[:n]', b'[:n + 1]'))
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: src/auth/store.py changes code, not only docstrings.', message)
+        self.assertIn('@codex security review', message)
+
+    def test_a_string_that_is_not_a_docstring_needs_a_review(self):
+        cases = {'a second string': STORE_OLD.replace(b'"""Return the rows."""', b'"""Return the rows."""\n        "x"'),
+                 'an f-string': STORE_OLD.replace(b'"""Return the rows."""', b'f"{self.data}"'),
+                 'a bytes docstring': STORE_OLD.replace(b'"""Return the rows."""', b'b"Return the rows."'),
+                 'a string value': STORE_OLD.replace(b'[:n]', b'[:n] or "Return the rows."')}
+        for name, new in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(new=new)
+                self.assertFalse(passed)
+                self.assertIn('changes code', message)
+
+    def test_a_parse_error_needs_a_review(self):
+        for old, new in ((STORE_OLD, STORE_DOCS + b'def (\n'), (STORE_OLD + b'\x00', STORE_DOCS), (STORE_OLD, b'\tx\n  y\n')):
+            with self.subTest(new=new[-6:]):
+                passed, message, _ = self.run_check(old=old, new=new)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py does not parse at the base or the head', message)
+
+    def test_an_added_deleted_or_renamed_file_needs_a_review(self):
+        cases = {'added': [{'path': STORE, 'previous': None, 'status': 'added', 'lines': 10}],
+                 'removed': [{'path': STORE, 'previous': None, 'status': 'removed', 'lines': 10}],
+                 'renamed': [{'path': STORE, 'previous': 'src/auth/old.py', 'status': 'renamed', 'lines': 10}]}
+        for name, files in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(files=files)
+                self.assertFalse(passed)
+                self.assertIn('is not a modified file with the same path.', message)
+
+    def test_a_missing_file_needs_a_review(self):
+        fake = Fake(files=[STORE], contents={(REPO, STORE, HEAD): STORE_DOCS})
+        passed, message, _ = check('security-review', fake, config=DOC_CONFIG)
+        self.assertFalse(passed)
+        self.assertIn('Cannot read src/auth/store.py at the base or the head.', message)
+
+    def test_a_listed_file_that_is_not_python_needs_a_review(self):
+        passed, message, _ = self.run_check(path='tools/run.sh', files=['tools/run.sh'], old=b'# a\necho 1\n', new=b'# b\necho 1\n')
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: tools/run.sh is not a .py file.', message)
+
+    def test_one_python_and_one_other_listed_file_need_a_review(self):
+        passed, message, _ = self.run_check(files=[STORE, '.github/workflows/ci.yml'])
+        self.assertFalse(passed)
+        self.assertIn('.github/workflows/ci.yml is not a .py file.', message)
+
+    def test_a_tree_that_reads_a_docstring_needs_a_review(self):
+        cases = {
+            'own __doc__': ({STORE: STORE_DOCS + b'print(__doc__)\n'}, 'src/auth/store.py reads its own __doc__'),
+            'object __doc__': ({'src/cli.py': b'from src.auth import store\nprint(store.Store.rows.__doc__)\n'},
+                               'src/cli.py reads __doc__ of an object'),
+            'getattr': ({'src/cli.py': b'getattr(x, "__doc__")\n'}, 'src/cli.py names __doc__ in a string'),
+            'import': ({'src/cli.py': b'from src.auth.store import __doc__ as text\n'}, 'src/cli.py imports __doc__ of a module'),
+            'inspect': ({'src/cli.py': b'from inspect import getdoc\n'}, 'src/cli.py names getdoc'),
+            'source': ({'src/cli.py': b'getsource(f)\n'}, 'src/cli.py names getsource'),
+            'ast reader': ({'src/cli.py': b'get_docstring(tree)\n'}, 'src/cli.py names get_docstring'),
+            'loader': ({'src/cli.py': b'__loader__.get_source(name)\n'}, 'src/cli.py names get_source'),
+            'own file': ({STORE: STORE_DOCS + b'open(__file__)\n'}, 'src/auth/store.py names its own source file'),
+            'module file': ({'src/cli.py': b'Path(store.__file__).read_text()\n'},
+                            'src/cli.py reads __file__ of an object'),
+            'spec origin': ({'src/cli.py': b'import importlib.util\n'}, 'src/cli.py names importlib'),
+            'origin': ({'src/cli.py': b'open(spec.origin)\n'}, 'src/cli.py reads origin of an object'),
+            'getattr file': ({'src/cli.py': b'open(getattr(store, "__file__"))\n'}, 'src/cli.py names __file__ in a string'),
+            'abs file': ({'src/cli.py': b'getabsfile(store)\n'}, 'src/cli.py names getabsfile'),
+            'inspect': ({'src/cli.py': b'import inspect\n'}, 'src/cli.py names inspect'),
+            'exec': ({'src/cli.py': b'exec(text)\n'}, 'src/cli.py names exec'),
+            'grammar': ({'src/parse.py': b'import ply.yacc\n'}, 'src/parse.py names ply'),
+            'txt reader': ({'tools/reader.txt': b'from src.auth import store\nrun(store.__doc__)\n'},
+                           'tools/reader.txt reads __doc__ of an object'),
+            'md reader': ({'docs/run.md': b'print(getdoc(x))\n'}, 'docs/run.md names getdoc'),
+            'config reader': ({'.github/gates.json': b'run(store.__doc__)\n'}, '.github/gates.json reads __doc__ of an object'),
+            'config path': ({'tox.ini': b'x = "src/auth/store.py"\n'}, 'tox.ini names the file store.py'),
+            'txt shell reader': ({'tools/reader.txt': b"python -c 'from src.auth import store; exec(store.__doc__)'\n"},
+                                 'tools/reader.txt names a docstring reader'),
+            'md path': ({'docs/run.md': b'Run `sh < src/auth/store.py`.\n'}, 'docs/run.md names the file store.py'),
+            'pytest doctest': ({'tools/test.py': b'from runner import main\nmain(["--doctest-modules", "src"])\n'},
+                               'tools/test.py names a docstring reader in a string'),
+            'bytes doctest': ({'tools/test.py': b'run([b"--doctest-glob"])\n'}, 'tools/test.py names a docstring reader in a string'),
+            'class pattern': ({'src/cli.py': b'match store:\n    case object(__doc__=text):\n        run(text)\n'},
+                              'src/cli.py reads __doc__ in a pattern or a keyword'),
+            'pattern file': ({'src/cli.py': b'match store:\n    case object(__file__=path):\n        run(path)\n'},
+                             'src/cli.py reads __file__ in a pattern or a keyword'),
+            'keyword': ({'src/cli.py': b'run(__doc__=1)\n'}, 'src/cli.py reads __doc__ in a pattern or a keyword'),
+            'sphinx conf': ({'docs/conf.py': b'extensions = ["sphinx.ext.autodoc"]\n'}, 'docs/conf.py names a docstring reader in a string'),
+            'sphinx import': ({'docs/conf.py': b'import sphinx\n'}, 'docs/conf.py names sphinx'),
+            'automodule': ({'docs/index.rst': b'.. automodule:: src.auth.store\n'}, 'docs/index.rst names a docstring reader'),
+            'sphinx build': ({'.github/workflows/docs.yml': b'run: sphinx-build docs out\n'},
+                             '.github/workflows/docs.yml names a docstring reader'),
+            'mkdocstrings': ({'mkdocs.yml': b'plugins:\n  - mkdocstrings\n'}, 'mkdocs.yml names a docstring reader'),
+            'command path': ({'tools/run.py': b'run("cat src/auth/store.py | sh", shell=True)\n'}, 'tools/run.py names the file store.py'),
+            'bytecode': ({'tools/run.py': b'run(deploy.__code__, shell=True)\n'}, 'tools/run.py reads __code__ of an object'),
+            'code consts': ({'tools/run.py': b'run(code.co_consts[0])\n'}, 'tools/run.py reads co_consts of an object'),
+            'dis': ({'tools/run.py': b'import dis\n'}, 'tools/run.py names dis'),
+            'help': ({'tools/run.py': b'help(store)\n'}, 'tools/run.py names help'),
+            'vars': ({'tools/run.py': b'run(list(vars(store).values())[1], shell=True)\n'}, 'tools/run.py names vars'),
+            'module dict': ({'tools/run.py': b'run(store.__dict__)\n'}, 'tools/run.py reads __dict__ of an object'),
+            'dir': ({'tools/run.py': b'[getattr(store, x) for x in dir(store)]\n'}, 'tools/run.py names dir'),
+            'shell vars': ({'bin/run.sh': b"sh -c \"$(python3 -c 'import s; print(list(vars(s).values())[1])')\"\n"},
+                           'bin/run.sh names a docstring reader'),
+            'shell dict': ({'bin/run.sh': b"python3 -c 'print(s.__dict__)'\n"}, 'bin/run.sh names a docstring reader'),
+            'shell code': ({'bin/run.sh': b"python3 -c 'exec(f.__code__.co_consts[0])'\n"}, 'bin/run.sh names a docstring reader'),
+            'function globals': ({'tools/run.py': b'run(list(store.marker.__globals__.values())[1], shell=True)\n'},
+                                 'tools/run.py reads __globals__ of an object'),
+            'frame globals': ({'tools/run.py': b'import sys\nrun(sys._getframe(0).f_globals)\n'}, 'tools/run.py reads f_globals of an object'),
+            'gc': ({'tools/run.py': b'import gc\n'}, 'tools/run.py names gc'),
+            'shell globals': ({'bin/run.sh': b"python3 -c 'print(f.__globals__)'\n"}, 'bin/run.sh names a docstring reader'),
+            'traceback': ({'tools/run.py': b'import traceback\nname = traceback.extract_stack()[0].filename\n'},
+                          'tools/run.py names traceback'),
+            'code file': ({'tools/run.py': b'name = code.co_filename\n'}, 'tools/run.py reads co_filename of an object'),
+            'trace frame': ({'tools/run.py': b'tb = error.__traceback__\n'}, 'tools/run.py reads __traceback__ of an object'),
+            'metaclass': ({'tools/meta.py': b'class Base(metaclass=Runner):\n    pass\n'},
+                          'tools/meta.py reads metaclass in a pattern or a keyword'),
+            'prepare': ({'tools/meta.py': b'class Runner(Base):\n    def __prepare__(name, bases):\n        return {}\n'},
+                        'tools/meta.py names __prepare__'),
+            'add metaclass': ({'tools/meta.py': b'import six\nBase = six.add_metaclass(Runner)(object)\n'},
+                              'tools/meta.py names add_metaclass'),
+            'catch warnings': ({'tools/run.py': b'import warnings\nwith warnings.catch_warnings(record=True) as w:\n    pass\n'},
+                               'tools/run.py names catch_warnings'),
+            'type factory': ({'tools/meta.py': b'Runner = type("Runner", (Base,), {"__new__": create})\n'},
+                             'tools/meta.py makes a class with a metaclass'),
+            'type base': ({'tools/meta.py': b'class Runner(type):\n    pass\n'}, 'tools/meta.py defines a metaclass'),
+            'abc base': ({'tools/meta.py': b'import abc\nclass Runner(abc.ABCMeta):\n    pass\n'},
+                         'tools/meta.py defines a metaclass'),
+            'upper pydoc': ({'bin/run.cmd': b'PYDOC src.auth.store | sh\r\n'}, 'bin/run.cmd names a docstring reader'),
+            'mixed inspect': ({'bin/run.cmd': b'python -c "import Inspect"\r\n'}, 'bin/run.cmd names a docstring reader'),
+            'module finder': ({'tools/run.py': b'from modulefinder import ModuleFinder\nhandle = ModuleFinder().find_module("store", ["src/auth"])\n'},
+                              'tools/run.py names ModuleFinder'),
+            'class browser': ({'tools/run.py': b'import pyclbr\nitems = pyclbr.readmodule("src.auth.store")\n'},
+                              'tools/run.py names pyclbr'),
+            'type alias': ({'tools/meta.py': b'from builtins import type as factory\nclass runner(factory):\n    pass\n'},
+                           'tools/meta.py names a metaclass'),
+            'type value': ({'tools/meta.py': b'factory = type\n'}, 'tools/meta.py names a metaclass'),
+            'type of': ({'tools/meta.py': b'class runner(type(int)):\n    pass\n'}, 'tools/meta.py has a base that is a call'),
+            'meta import': ({'tools/meta.py': b'from abc import ABCMeta as factory\n'}, 'tools/meta.py names a metaclass'),
+            'class attr': ({'tools/meta.py': b'factory = int.__class__\n'}, 'tools/meta.py reads __class__ of an object'),
+            'lfs pointer': ({'tools/run.py': b'version https://git-lfs.github.com/spec/v1\noid sha256:' + b'0' * 64 + b'\nsize 12\n'},
+                            'tools/run.py is a Git LFS pointer'),
+            'lfs filter': ({'.gitattributes': b'tools/*.py filter=lfs diff=lfs merge=lfs -text\n'},
+                           '.gitattributes changes the bytes of a checkout'),
+            'encoding': ({'tools/.gitattributes': b'*.ps1 working-tree-encoding=UTF-16LE\n'},
+                         'tools/.gitattributes changes the bytes of a checkout'),
+            'ident': ({'.gitattributes': b'*.py ident\n'}, '.gitattributes changes the bytes of a checkout'),
+            'audit hook': ({'tools/run.py': b'import sys\nsys.addaudithook(hook)\n'}, 'tools/run.py names addaudithook'),
+            'trace hook': ({'tools/run.py': b'import sys\nsys.settrace(hook)\n'}, 'tools/run.py names settrace'),
+            'monitoring': ({'tools/run.py': b'import sys\nsys.monitoring.register_callback(1, 2, hook)\n'},
+                           'tools/run.py names register_callback'),
+            'base64 shell': ({'bin/run.sh': b'base64 -d tools/run.txt | sh\n'}, 'bin/run.sh names a docstring reader'),
+            'zlib': ({'tools/run.py': b'import zlib\nrun(zlib.decompress(data))\n'}, 'tools/run.py names zlib'),
+            'decoder': ({'tools/run.py': b'from codecs import decode\nrun(decode(data, "rot13"))\n'},
+                        'tools/run.py names codecs'),
+            'dunder dir': ({'tools/run.py': b'from src.auth import store\nnames = store.__dir__()\n'}, 'tools/run.py names dir'),
+            'shell dunder': ({'bin/run.sh': b'python3 -c "print(m.__dir__())"\n'}, 'bin/run.sh names a docstring reader'),
+            'wrapper names': ({'tools/run.py': b'import functools\nfor a in functools.WRAPPER_ASSIGNMENTS:\n    pass\n'},
+                              'tools/run.py names WRAPPER_ASSIGNMENTS'),
+            'cache shell': ({'bin/run.sh': b'strings src/auth/__pycache__/store.cpython-314.pyc | sh\n'},
+                            'bin/run.sh names the bytecode cache'),
+            'cache glob': ({'bin/run.sh': b'cat build/*.pyc | sh\n'}, 'bin/run.sh names the bytecode cache'),
+            'cache python': ({'tools/run.py': b'paths = glob("**/__pycache__/*", recursive=True)\n'},
+                             'tools/run.py names the bytecode cache in a string'),
+            'cache prefix': ({'tools/run.py': b'import sys\nroot = sys.pycache_prefix\n'}, 'tools/run.py names pycache_prefix'),
+            'test description': ({'tools/run.py': b'for case in suite:\n    run(case.shortDescription())\n'},
+                                 'tools/run.py names shortDescription'),
+            'command help': ({'tools/run.py': b'shell.do_help("deploy")\n'}, 'tools/run.py names do_help'),
+            'rpc help': ({'tools/run.py': b'server.register_introspection_functions()\n'},
+                         'tools/run.py names register_introspection_functions'),
+            'unittest shell': ({'bin/run.sh': b'python -m unittest -v 2>&1 | sh\n'}, 'bin/run.sh names a docstring reader'),
+            'unittest python': ({'tools/run.py': b'import unittest\nunittest.main(verbosity=2)\n'}, 'tools/run.py names unittest'),
+            'nose2': ({'bin/run.sh': b'nose2 -v | sh\n'}, 'bin/run.sh names nose2'),
+            'wraps': ({'tools/run.py': b'import functools\nwrapper = functools.wraps(store.deploy)(Recorder())\n'},
+                      'tools/run.py names wraps'),
+            'set attr': ({'tools/run.py': b'class Recorder:\n    def __setattr__(self, name, value):\n        run(value)\n'},
+                         'tools/run.py names __setattr__'),
+            'doc slot': ({'tools/run.py': b'class Wrapper:\n    __doc__ = Recorder()\n'}, 'tools/run.py sets __doc__'),
+            'trace': ({'tools/run.sh': b'python -m trace --trace -m src.auth.store | sh\n'},
+                      'tools/run.sh names a docstring reader'),
+            'pdb': ({'tools/run.sh': b'echo "l 1, 9" | python -m pdb -m src.auth.store | sh\n'},
+                    'tools/run.sh names a docstring reader'),
+            'cr origin': ({'tools/run.py': b'c = store.make()\nrun(open(c.cr_origin[0][0]).read())\n'},
+                          'tools/run.py reads cr_origin of an object'),
+            'origin depth': ({'tools/run.py': b'import sys\nsys.set_coroutine_origin_tracking_depth(1)\n'},
+                             'tools/run.py names set_coroutine_origin_tracking_depth'),
+            'source traceback': ({'tools/run.py': b'run(task._source_traceback)\n'},
+                                 'tools/run.py reads _source_traceback of an object'),
+            'include comment': ({'tools/reader.py': b'#include "src/auth/store.py"\n'},
+                                'tools/reader.py names the file store.py in a comment'),
+            'comment word': ({'tools/run.py': b'x = 1  # python -m pydoc src.auth.store | sh\n'},
+                             'tools/run.py names a docstring reader in a comment'),
+            'comment cache': ({'tools/run.py': b'# cat src/auth/__pycache__/*.pyc\n'},
+                              'tools/run.py names the bytecode cache in a comment'),
+            'iconv': ({'tools/run.sh': b'iconv -f UTF-7 tools/run.txt | python3\n'}, 'tools/run.sh names a docstring reader'),
+            'utf-7 word': ({'tools/run.sh': b'python3 -X utf8 tools/load.py UTF-7 | sh\n'},
+                           'tools/run.sh names an encoding that can hide a reader'),
+            'decode utf-7': ({'tools/run.py': b'run(DATA.decode("utf-7"))\n'},
+                             'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'ebcdic open': ({'tools/run.py': b'run(open(PATH, encoding="cp037").read())\n'},
+                            'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'codec name': ({'tools/run.py': b'run(str(DATA, CODEC))\n'},
+                           'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'read text': ({'tools/run.py': b'run(PATH.read_text(CODEC))\n'},
+                          'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'path open': ({'tools/run.py': b'run(PATH.open("r", -1, CODEC).read())\n'},
+                          'tools/run.py decodes text with an encoding that is not UTF-8, ASCII or Latin-1'),
+            'codec string': ({'tools/run.py': b'run(load(PATH, "UTF-7"))\n'},
+                             'tools/run.py names an encoding that can hide a reader in a string'),
+            'utf-16 bytes': ({'tools/run.py': b'run(load(b"_\\x00_\\x00d\\x00o\\x00c\\x00_\\x00_\\x00"))\n'},
+                             'tools/run.py names a docstring reader in a string'),
+            'encodings': ({'tools/run.py': b'from encodings import utf_7\n'}, 'tools/run.py names encodings'),
+            'cgitb': ({'tools/run.py': b'import sys, cgitb\nrun(cgitb.text(sys.exc_info(), context=5))\n'},
+                      'tools/run.py names cgitb'),
+            'context lines': ({'tools/run.py': b'run(event["frames"][0]["context_line"])\n'},
+                              'tools/run.py names a docstring reader in a string'),
+            'pstats': ({'tools/run.py': b'from pstats import Stats\nrun(Stats(PROFILE).get_stats_profile())\n'},
+                       'tools/run.py names pstats'),
+            'cprofile': ({'tools/run.sh': b'python3 -m cProfile -o run.prof -m src.auth.store\n'},
+                         'tools/run.sh names a docstring reader'),
+            'short name': ({'tools/run.py': b'run(open("src/auth/STORE~1.PY").read())\n'},
+                           'tools/run.py names a Windows short name in a string'),
+            'hash short name': ({'tools/run.bat': b'type src\\auth\\ST1A2B~1.PY | cmd\n'},
+                                'tools/run.bat names a Windows short name'),
+            'faulthandler': ({'tools/run.py': b'import faulthandler\nfaulthandler.dump_traceback(LOG)\n'},
+                             'tools/run.py names faulthandler'),
+            'dump traceback': ({'tools/run.py': b'from fh import dump_traceback_later\n'},
+                               'tools/run.py names dump_traceback_later'),
+            'log format': ({'tools/run.py': b'import logging\nhandler.setFormatter(logging.Formatter("%(filename)s"))\n'},
+                           'tools/run.py names a log record field of the source file in a string'),
+            'log brace': ({'tools/log.ini': b'[formatter_run]\nformat={filename}\nstyle={\n'},
+                          'tools/log.ini names a log record field of the source file'),
+            'record filename': ({'tools/run.py': b'def emit(record):\n    run(record.filename)\n'},
+                                'tools/run.py reads filename of an object'),
+            'excepthook': ({'tools/run.py': b'import sys\nsys.excepthook(*sys.exc_info())\n'},
+                           'tools/run.py names excepthook'),
+            'exc info': ({'tools/run.py': b'log.error("x", exc_info=True)\n'}, 'tools/run.py names exc_info in a keyword'),
+            'log exception': ({'tools/run.py': b'log.exception("x")\n'}, 'tools/run.py reads exception of an object'),
+            'print exc': ({'tools/run.sh': b'python3 -c "import tb; tb.print_exc()" 2>&1 | sh\n'},
+                          'tools/run.sh names a docstring reader'),
+            'shell glob': ({'tools/run.sh': b'sh src/auth/*.py\n'}, 'tools/run.sh names the file store.py with a wildcard'),
+            'class glob': ({'tools/run.sh': b'sh src/auth/st[a-z]re.py\n'},
+                           'tools/run.sh names the file store.py with a wildcard'),
+            'brace glob': ({'tools/run.sh': b'sh src/auth/{store,other}.py\n'},
+                           'tools/run.sh names the file store.py with a wildcard'),
+            'one char glob': ({'tools/run.sh': b'sh src/AUTH/STOR?.PY\n'},
+                              'tools/run.sh names the file store.py with a wildcard'),
+            'python glob': ({'tools/run.py': b'for path in glob("src/auth/*.py"):\n    run(path)\n'},
+                            'tools/run.py names the file store.py with a wildcard'),
+            'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
+                         'tools/run.py names xdoctest'),
+            'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
+                            'tools/run.py names run_doctests'),
+            'get state': ({'tools/run.py': b'from src.auth import store\nrun(list(store.__getstate__().values())[1])\n'},
+                          'tools/run.py names __getstate__'),
+            'reduce': ({'tools/run.py': b'state = obj.__reduce_ex__(2)\n'}, 'tools/run.py names __reduce_ex__'),
+            'shell py': ({'tools/run.py': b'#!/bin/sh\nx = "python3 -c print(s.__doc__)"\n'}, 'tools/run.py names a docstring reader in a string'),
+            'shell origin': ({'bin/run.sh': b'python -c "import auth.store as s; print(s.__file__)"\n'},
+                             'bin/run.sh names a docstring reader'),
+            'file path': ({'src/cli.py': b'Path("src/auth/store.py").read_text()\n'}, 'src/cli.py names the file store.py'),
+            'click': ({'src/cli.py': b'import click.testing\n'}, 'src/cli.py names click'),
+            'from click': ({'src/cli.py': b'from click import command\n'}, 'src/cli.py names click'),
+            'doctest config': ({'pyproject.toml': b'addopts = "--doctest-modules"\n'}, 'pyproject.toml names a docstring reader in a string'),
+            'script reader': ({'bin/run': b'#!/usr/bin/env python3\nget_docstring(t)\n'}, 'bin/run names get_docstring'),
+            'pyw reader': ({'src/app.pyw': b'get_docstring(t)\n'}, 'src/app.pyw names get_docstring'),
+            'shell reader': ({'bin/run.sh': b'python -c "import ast; ast.get_docstring(t)"\n'}, 'bin/run.sh names a docstring reader'),
+            'shell path': ({'bin/run.sh': b'python - < src/auth/store.py\n'}, 'bin/run.sh names the file store.py'),
+            'broken file': ({'tests/bad.py': b'def (\n'}, 'tests/bad.py does not parse at the head (SyntaxError)'),
+        }
+        for name, (tree, expected) in cases.items():
+            with self.subTest(name):
+                own = tree.get(STORE, STORE_DOCS)[len(STORE_DOCS):]
+                passed, message, _ = self.run_check(old=STORE_OLD + own,
+                                                    new=tree.get(STORE, STORE_DOCS), tree={STORE: STORE_DOCS} | tree)
+                self.assertFalse(passed)
+                self.assertIn(expected + ', so a docstring can be code.', message)
+
+    def test_a_bytes_path_with_a_non_ascii_name_needs_a_review(self):
+        path = 'src/auth/\u00e9.py'
+        tree = {path: STORE_DOCS, 'tools/run.py': b'run(b"sh src/auth/\\xc3\\xa9.py")\n'}
+        passed, message, _ = self.run_check(path=path, files=(path,), tree=tree)
+        self.assertFalse(passed)
+        self.assertIn('tools/run.py names the file \\u00e9.py', message)
+        for encoding in ('utf-16-le', 'utf-16-be', 'utf-32-le', 'utf-32-be', 'utf-16', 'utf-32'):
+            with self.subTest(encoding=encoding):
+                tree = {path: STORE_DOCS, 'tools/run.txt': 'cat src/auth/\u00e9.py | sh\n'.encode(encoding)}
+                passed, message, _ = self.run_check(path=path, files=(path,), tree=tree)
+                self.assertFalse(passed)
+                # A BOM-less file with a name that is not ASCII is not UTF-8 text, and the check also fails closed.
+                self.assertRegex(message, r'Docstring check: tools/run.txt (names the file \\u00e9\.py|is not UTF-8)')
+
+    def test_a_file_name_in_another_case_or_form_needs_a_review(self):
+        cases = {'python upper': ('tools/run.py', b'open("src/auth/STORE.PY").read()\n'),
+                 'shell upper': ('bin/run.sh', b'cat SRC/AUTH/Store.py | sh\n'),
+                 'nfd': ('bin/run.sh', 'cat src/auth/e\u0301.py | sh\n'.encode())}
+        for name, (reader, data) in cases.items():
+            with self.subTest(name):
+                path = 'src/auth/\u00e9.py' if name == 'nfd' else STORE
+                passed, message, _ = self.run_check(path=path, files=(path,), tree={path: STORE_DOCS, reader: data})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: %s names the file' % reader, message)
+
+    def test_a_listed_file_that_reads_the_command_line_needs_a_review(self):
+        cases = {'argv': b'import sys\nrun(open(sys.argv[0]).read())\n', 'from import': b'from sys import argv\n',
+                 'orig argv': b'import sys\nname = sys.orig_argv[1]\n',
+                 'warning file': b'import warnings\nwarnings.warn("x")\n',
+                 'filename': b'def emit(filename):\n    run(filename)\n'}
+        for name, code in cases.items():
+            with self.subTest(name):
+                old, new = STORE_OLD + code, STORE_DOCS + code
+                passed, message, _ = self.run_check(old=old, new=new, tree={STORE: new})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: src/auth/store.py names its own source file in', message)
+        tree = {STORE: STORE_DOCS, 'tools/run.py': b'import sys\nprint(sys.argv[1:])\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
+
+    def test_a_link_or_a_copy_of_a_listed_file_needs_a_review(self):
+        passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'payload': STORE_DOCS})
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: payload has the bytes of src/auth/store.py, so a docstring can be code.', message)
+
+    def test_a_copy_with_other_line_breaks_needs_a_review(self):
+        # A checkout with core.autocrlf writes both files with \r\n.
+        # A #! line with \r\n does not run Python, so these files have no #! line.
+        lf = (STORE_OLD.split(b'\n', 1)[1], STORE_DOCS.split(b'\n', 1)[1])
+        crlf = (lf[0].replace(b'\n', b'\r\n'), lf[1].replace(b'\n', b'\r\n'))
+        for name, (old, new, copy) in {'crlf file': crlf + (lf[1],), 'crlf copy': lf + (crlf[1],)}.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new, tree={STORE: new, 'payload': copy})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: payload has the bytes of src/auth/store.py', message)
+
+    def test_a_utf16_reader_needs_a_review(self):
+        script = 'python -c "from src.auth import store; exec(store.__doc__)"\r\n'
+        cases = {'bom': script.encode('utf-16'), 'no bom': script.encode('utf-16-le'),
+                 'path': '& sh src/auth/store.py\r\n'.encode('utf-16')}
+        for name, data in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.ps1': data})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: tools/run.ps1 names', message)
+
+    def test_a_plain_decode_does_not_need_a_review(self):
+        for source in (b'x = DATA.decode()\n', b'x = DATA.decode("UTF-8")\n', b'x = open(PATH, encoding="utf-8").read()\n',
+                       b'x = str(DATA, "latin-1")\n', b'x = open(PATH, encoding=None)\n', b'x = PATH.read_text("utf-8")\n',
+                       b'x = open(PATH, "r", -1, "ascii")\n'):
+            with self.subTest(source=source):
+                self.assertIsNone(gate.python_reader(gate.ast.parse(source), False, ['src/auth/store.py']))
+
+    def test_a_list_mark_or_a_product_is_not_a_glob(self):
+        tree = {STORE: STORE_DOCS, 'docs/a.md': b'# Title\n\n* One item.\n- Two items.\n**Bold** text.\n',
+                'web/a.js': b'/* A block. */\n/**\n * A doc.\n */\nlet a = b * c;\n', '.gitignore': b'*.py[cod]\n*.py\n',
+                'tools/run.sh': b'cp build/*.whl dist/\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
+
+    def test_an_ignore_file_can_name_the_bytecode_cache(self):
+        tree = {STORE: STORE_DOCS, '.gitignore': b'__pycache__/\n*.pyc\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
+
+    def test_a_file_that_is_not_text_needs_a_review(self):
+        import zlib
+        cases = {'zlib': zlib.compress(b'import os\nos.system(store.__doc__)\n'), 'latin-1': 'caf\u00e9\n'.encode('latin-1')}
+        for name, data in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.bin': data})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: tools/run.bin is not UTF-8, UTF-16 or UTF-32 text', message)
+        for data in ('caf\u00e9\n'.encode(), 'caf\u00e9\n'.encode('utf-16'), 'caf\u00e9\n'.encode('utf-32')):
+            with self.subTest(data=data):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'docs/note.txt': data})
+                self.assertTrue(passed, message)
+
+    def test_an_archive_needs_a_review(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('__main__.py', 'from src.auth import store\nexec(store.__doc__)\n' * 20)
+        cases = {'reader.pyz': b'#!/usr/bin/env python3\n' + data.getvalue(), 'reader.zip': data.getvalue(),
+                 'reader.gz': gzip.compress(b'exec(store.__doc__)\n')}
+        for path, body in cases.items():
+            with self.subTest(path):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, path: body})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: %s is an archive or a compressed file' % path, message)
+
+    def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
+        tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Review a PR."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
+                'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',
+                '.github/gates.json': b'{"version": 1, "boundaries": ["src/auth/store.py"]}\n',
+                '.github/CODEOWNERS': b'src/auth/store.py @owner\n',
+                'README.md': b'The store keeps the rows.\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
+
+    def test_a_tree_read_error_needs_a_review(self):
+        for error in (gate.GateError('The tree of aaaaaaaaaaaa has more than 20000 files.'), gate.tarfile.ReadError('bad')):
+            with self.subTest(error=type(error).__name__):
+                passed, message, _ = self.run_check(tree=error)
+                self.assertFalse(passed)
+                self.assertIn('The docstring check failed closed (%s' % type(error).__name__, message)
+
+    def test_the_check_reads_the_test_merge_commit(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=[STORE], contents=contents)
+        fake.tree = {STORE: STORE_DOCS, 'src/base_only.py': b'from src.auth.store import __doc__\n'}
+        passed, message, _ = check('security-review', fake, config=DOC_CONFIG)
+        self.assertFalse(passed)
+        self.assertEqual(fake.tree_ref, MERGE)
+        self.assertIn('src/base_only.py imports __doc__ of a module', message)
+
+    def test_a_missing_or_stale_test_merge_needs_a_review(self):
+        for merge in (None, '', 'abc', OLD):
+            with self.subTest(merge=merge):
+                contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+                fake = Fake(files=[STORE], contents=contents)
+                fake.state['merge_commit_sha'] = merge
+                passed, message, _ = check('security-review', fake, config=DOC_CONFIG)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: GitHub has no test merge commit of the base ffffffffffff and the head aaaaaaaaaaaa.', message)
+
+    def test_security_needed_skips_the_docstring_check(self):
+        passed, message, _ = self.run_check(labels=['security-needed'])
+        self.assertFalse(passed)
+        self.assertNotIn('Docstring check', message)
+        self.assertNotIn('No review is necessary.', message)
+
+    def test_the_docstring_check_does_not_change_the_code_review(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=[STORE], contents=contents)
+        fake.tree = {STORE: STORE_DOCS}
+        passed, message, _ = check('cross-review', fake)
+        self.assertFalse(passed)
+
+
+def tarball(files, top='owner-project-aaaaaaa', links=None):
+    """Return the bytes of a tarball like the one of the GitHub API, with a top folder and a link."""
+    data = io.BytesIO()
+    with gate.tarfile.open(fileobj=data, mode='w:gz') as archive:
+        folder = gate.tarfile.TarInfo(top)
+        folder.type = gate.tarfile.DIRTYPE
+        archive.addfile(folder)
+        for path, body in files.items():
+            info = gate.tarfile.TarInfo(top + '/' + path)
+            info.size = len(body)
+            archive.addfile(info, io.BytesIO(body))
+        for path, target in (links or {}).items():
+            link = gate.tarfile.TarInfo(top + '/' + path)
+            link.type, link.linkname = gate.tarfile.SYMTYPE, target
+            archive.addfile(link)
+    return data.getvalue()
+
+
+def git_tree(data):
+    """Return the Git tree of the GitHub API for the tarball."""
+    found = []
+    with gate.tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+        for x in archive:
+            if '/' not in x.name:
+                continue
+            item = {'path': x.name.split('/', 1)[-1], 'type': 'tree' if x.isdir() else 'blob', 'mode': '120000' if x.issym() else '100644'}
+            if x.issym():
+                item['sha'] = gate.blob_sha(x.linkname.encode())
+            elif x.isfile():
+                item['sha'] = gate.blob_sha(archive.extractfile(x).read())
+            found.append(item)
+    return {'truncated': False, 'tree': found}
+
+
+class TreeFilesTest(unittest.TestCase):
+    def read(self, data, tree=None):
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = lambda size: data[:size]
+        if tree is None:
+            tree = git_tree(data)
+        with mock.patch.object(gate.urllib.request, 'urlopen', return_value=response) as opened, \
+                mock.patch.object(gate.GitHub, 'call', return_value=tree) as call:
+            found = gate.GitHub(REPO, 7, 'token').tree_files(HEAD)
+        call.assert_called_once_with('GET', '/repos/owner/project/git/trees/%s?recursive=1' % HEAD)
+        self.assertEqual(opened.call_args[0][0].full_url, 'https://api.github.com/repos/owner/project/tarball/' + HEAD)
+        return found
+
+    def test_the_mode_comes_from_the_tree_of_the_folder(self):
+        tree = {'tree': [{'path': 'store.py', 'type': 'blob', 'mode': '100755'}, {'path': 'x', 'type': 'tree', 'mode': '040000'}]}
+        with mock.patch.object(gate.GitHub, 'call', return_value=tree) as call:
+            github = gate.GitHub(REPO, 7, 'token')
+            self.assertEqual(github.mode(HEAD, 'src/auth/store.py'), '100755')
+            self.assertIsNone(github.mode(HEAD, 'src/auth/x'))
+        self.assertEqual(call.call_args[0][1], '/repos/%s/git/trees/%s:src/auth' % (REPO, HEAD))
+        with mock.patch.object(gate.GitHub, 'call', return_value={'tree': [], 'truncated': True}):
+            with self.assertRaises(gate.GateError):
+                gate.GitHub(REPO, 7, 'token').mode(HEAD, 'store.py')
+
+    def test_the_tree_has_each_file_without_the_top_folder(self):
+        self.assertEqual(self.read(tarball({'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})),
+                         {'src/a.py': b'x = 1\n', 'README.md': b'# A\n'})
+
+    def test_a_link_gets_the_content_of_its_target(self):
+        found = self.read(tarball({'shared/reader.txt': b'from a import __doc__\n'},
+                                  links={'reader.py': 'shared/reader.txt', 'two.py': 'reader.py'}))
+        self.assertEqual(found['reader.py'], b'from a import __doc__\n')
+        self.assertEqual(found['two.py'], b'from a import __doc__\n')
+
+    def test_a_link_with_no_target_file_fails_closed(self):
+        for path, target in (('loop.py', 'loop.py'), ('loop.py', 'missing.py'), ('gone.md', 'shared/gone.md'),
+                             ('payload', 'SRC/AUTH/STORE.PY'), ('payload', 'src/AUTH/store.py')):
+            with self.subTest(target=target), self.assertRaisesRegex(gate.GateError, 'has no target file'):
+                self.read(tarball({'src/auth/store.py': b'x\n'}, links={path: target}))
+
+    def test_two_paths_in_another_case_or_form_fail_closed(self):
+        for other in ('SRC/AUTH/STORE.PY', 'src/auth/Store.py', 'src/auth/\uff53tore.py'):
+            with self.subTest(other=other), self.assertRaisesRegex(gate.GateError, 'can be one file in a checkout'):
+                self.read(tarball({'src/auth/store.py': b'x\n', other: b'y\n'}))
+        with self.assertRaisesRegex(gate.GateError, 'can be one file in a checkout'):
+            self.read(tarball({'src/auth/store.py': b'x\n'}, links={'SRC/auth/store.py': 'src/auth/store.py'}))
+
+    def test_a_link_to_a_folder_or_out_of_the_tree_fails_closed(self):
+        for path, target in (('payload', 'src/auth'), ('payload', '.'), ('deep/payload', '../src'), ('payload', '/etc'),
+                             ('payload.py', '../outside.py'), ('root', '..')):
+            with self.subTest(target=target), self.assertRaisesRegex(gate.GateError, 'goes to a folder or out of the tree'):
+                self.read(tarball({'src/auth/store.py': b'x\n'}, links={path: target}))
+
+    def test_a_hard_link_fails_closed(self):
+        data = io.BytesIO()
+        with gate.tarfile.open(fileobj=data, mode='w:gz') as archive:
+            link = gate.tarfile.TarInfo('top/a.py')
+            link.type, link.linkname = gate.tarfile.LNKTYPE, 'top/b.py'
+            archive.addfile(link)
+        with self.assertRaisesRegex(gate.GateError, 'hard link'):
+            self.read(data.getvalue())
+
+    def test_a_tree_that_does_not_agree_with_the_tarball_fails_closed(self):
+        data = tarball({'src/a.py': b'x = 1\n'})
+        blob = {'path': 'src/a.py', 'type': 'blob', 'mode': '100644', 'sha': gate.blob_sha(b'x = 1\n')}
+        cases = {'export-ignore': ({'truncated': False, 'tree': [blob, {'path': 'reader.py', 'type': 'blob'}]}, 'does not have reader.py'),
+                 'submodule': ({'truncated': False, 'tree': [blob, {'path': 'lib', 'type': 'commit'}]}, 'has a submodule'),
+                 'truncated': ({'truncated': True, 'tree': [blob]}, 'did not give the full Git tree'),
+                 'no list': ({'truncated': False}, 'did not give the full Git tree'),
+                 'export-subst': ({'truncated': False, 'tree': [blob | {'mode': '100644', 'sha': gate.blob_sha(b'x = $Format:%B$\n')}]},
+                                  'changes src/a.py, for example by export-subst'),
+                 'file as link': ({'truncated': False, 'tree': [blob | {'mode': '120000', 'sha': gate.blob_sha(b'x = 1\n')}]},
+                                  'gives src/a.py as a different kind of file')}
+        for name, (tree, expected) in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(gate.GateError, expected):
+                self.read(data, tree)
+
+    def test_parents_reads_the_commit(self):
+        with mock.patch.object(gate.GitHub, 'call', return_value={'parents': [{'sha': TIP}, {'sha': HEAD}]}) as call:
+            self.assertEqual(gate.GitHub(REPO, 7, 'token').parents(MERGE), [TIP, HEAD])
+        call.assert_called_once_with('GET', '/repos/owner/project/commits/' + MERGE)
+
+    def test_a_large_tree_fails_closed(self):
+        cases = {'TARBALL_BYTES': 'larger than 10 bytes', 'TREE_BYTES': 'larger than 10 bytes', 'TREE_FILES': 'more than 2 files'}
+        for name, expected in cases.items():
+            with self.subTest(name), mock.patch.object(gate, name, 2 if name == 'TREE_FILES' else 10):
+                with self.assertRaisesRegex(gate.GateError, expected):
+                    self.read(tarball({'a.py': b'x = 1\n', 'b.py': b'y = 2\n'}))
 
 
 CHECKOUT_OLD, CHECKOUT_NEW = '1' * 40, '2' * 40

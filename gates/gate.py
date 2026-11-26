@@ -6,19 +6,27 @@ It never checks out or runs PR code. It reads the PR from the GitHub API and the
 It uses the standard library only, and it calls no host other than the GitHub API.
 """
 import argparse
+import ast
 import base64
+import codecs
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import sys
+import tarfile
 import time
+import tokenize
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from claude_review import FAILED, MARKER as CLAUDE_MARKER, REQUESTS as CLAUDE_REQUESTS, request_kind as claude_request_kind  # noqa: E402
@@ -57,6 +65,140 @@ COPIES = {'docs/STANDARD.md': 'docs/STANDARD.md', 'tools/claude_review.py': 'gat
 DEPENDABOT = 'dependabot[bot]'
 USES = re.compile(rb'(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@([0-9a-f]{40}) # (v?[0-9][0-9A-Za-z.+-]*)(\r?\n)?')
 PIN_FILE = '.github/workflows/gates.yml'
+# A listed .py file that changes only the text of its docstrings needs no security review. The gate reads the head tree from
+# the tarball and stops at these limits. A larger tree needs a review.
+TARBALL_BYTES = 64 * 1024 * 1024
+TREE_BYTES = 256 * 1024 * 1024
+TREE_FILES = 20000
+# A docstring is code if a file of the head tree reads it. A Python file that names one of these reads docstrings or
+# source files, runs text as code, makes the help text of a command or a grammar from the docstrings, or publishes them
+# as docs. The names are
+# modules and functions, so a new function of the module "inspect" or "ast" also counts.
+DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'getsourcefile', 'getfile',
+             'getabsfile', 'getmodule', 'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click',
+             'typer', 'fire', 'docopt', 'ply', 'find_spec', 'get_filename', 'importlib', 'pkgutil', 'inspect', 'ast',
+             'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
+             'griffe', 'dis', 'marshal', 'help', 'vars', 'globals', 'locals', 'dir', 'getmembers', 'getmembers_static',
+             '__getattribute__', '__getstate__', '__reduce__', '__reduce_ex__', 'copyreg', '_getframe', 'currentframe',
+             'gc', 'get_referents', 'get_referrers', 'ctypes', 'traceback', 'extract_stack', 'walk_stack',
+             # A metaclass gets the namespace of a class, and the namespace holds __doc__.
+             '__prepare__', 'add_metaclass', 'with_metaclass', 'new_class', 'prepare_class',
+             # A captured warning gives the source file of the code that gives it.
+             'catch_warnings', 'showwarning', 'formatwarning', 'captureWarnings', 'WarningMessage',
+             # These tools find or read the source file of a module by its name.
+             'modulefinder', 'ModuleFinder', 'find_module', 'find_loader', 'imp', 'pyclbr', 'py_compile', 'compileall',
+             'pkg_resources', 'meta_path', 'path_hooks', 'path_importer_cache', 'FileFinder', 'SourceFileLoader',
+             'tabnanny', 'symtable', 'builtins',
+             # A hook of the interpreter gets each event, for example the path of each source file that an import
+             # opens.
+             'addaudithook', 'audit', 'settrace', 'setprofile', 'monitoring', 'register_callback', 'call_tracing',
+             '_current_frames', 'meta_path',
+             # A decoder can unpack a reader from a text file, for example "base64 -d run.txt | sh".
+             'base64', 'binascii', 'zlib', 'gzip', 'bz2', 'lzma', 'zstd', 'compression', 'zipfile', 'tarfile',
+             'unpack_archive', 'pickle', 'shelve', 'fromhex', 'codecs', 'rot13', 'rot_13', 'uu', 'quopri', 'gunzip',
+             'zcat', 'bzcat', 'xzcat', 'unxz', 'unzstd', 'zstdcat', 'xxd', 'unzip', 'uudecode', 'base32', 'basenc',
+             'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio',
+             # A transcoder can decode a reader from text in another encoding, for example "iconv -f UTF-7 run.txt | sh".
+             'iconv', 'uconv', 'recode', 'piconv', 'enconv', 'native2ascii', 'konwert', 'dd', 'encodings',
+             # This tuple of functools holds the string '__doc__'.
+             'WRAPPER_ASSIGNMENTS',
+             # The bytecode cache holds a copy of each docstring.
+             'pycache_prefix', 'cache_from_source', 'source_from_cache', 'cache_tag',
+             # These standard APIs return a docstring: unittest gives the docstring of a test, cmd.Cmd prints the
+             # docstring of a command, and XML-RPC introspection returns the docstring of a method.
+             'shortDescription', '_testMethodDoc', 'getDescription', 'do_help', 'system_methodHelp',
+             'register_introspection_functions', 'DocXMLRPCServer', 'DocXMLRPCRequestHandler', 'idlelib',
+             # A test runner prints the docstring of each test in verbose mode, for example "python -m unittest -v".
+             'unittest', 'TextTestRunner', 'TestProgram', 'nose', 'nose2', 'green', 'trial', 'testtools', 'stestr',
+             'subunit',
+             # functools copies the docstring of a function to its wrapper, and a __setattr__ or a __set__ method can
+             # get the copy.
+             'wraps', 'update_wrapper', 'cached_property', '__setattr__', '__set__',
+             # A debugger, a tracer or a report tool finds a module by its dotted name and prints its source lines.
+             'trace', 'tracemalloc', 'pdb', 'bdb', 'ipdb', 'pudb', 'trepan', 'IPython', 'ultratb', 'rich',
+             'stackprinter', 'better_exceptions', 'pytest', 'coverage',
+             # A report tool can print the source lines near a frame, for example cgitb.text(info, context=5), so it
+             # can print a docstring on its own line.
+             'cgitb', 'tbtools', 'werkzeug', 'sentry_sdk', 'raven', 'rollbar', 'bugsnag', 'loguru', 'pretty_errors',
+             'tbvaccine', 'stack_data', 'executing', 'varname', 'icecream', 'snoop', 'birdseye', 'pysnooper',
+             'heartrate', 'viztracer', 'hunter', 'friendly_traceback',
+             # A profiler gives the source file of each function that it profiles, for example FunctionProfile.file_name
+             # of pstats.
+             'cProfile', 'profile', 'pstats', '_lsprof', 'get_stats_profile', 'func_profiles', 'FunctionProfile', 'yappi',
+             'pyinstrument', 'line_profiler', 'memory_profiler', 'scalene', 'py_spy', 'austin',
+             # An exception hook or a log call with exc_info prints the source file of each frame.
+             'excepthook', 'unraisablehook', 'exc_info', 'stack_info', 'last_exc', 'last_value', 'last_type',
+             'print_exception', 'print_exc', 'format_exception', 'format_exc', 'print_last', 'print_stack',
+             'format_stack', 'print_tb', 'format_tb', 'extract_tb', 'walk_tb', 'showsyntaxerror',
+             'default_exception_handler', 'call_exception_handler', 'context_line', 'context_lines', 'pre_context', 'post_context',
+             # The interpreter records the source file and line of the code that makes a coroutine, for example in
+             # cr_origin.
+             'set_coroutine_origin_tracking_depth', 'get_coroutine_origin_tracking_depth'}
+# The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
+# with other underscores, for example __dir__.
+BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
+# These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
+# code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
+# module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
+# with one of these names counts in each file.
+ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__code__', 'co_consts', 'co_code', 'gi_code',
+                'cr_code', 'f_code', '__dict__', '__globals__', '__builtins__', 'f_globals', 'f_locals', 'f_builtins', 'f_back',
+                'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents', 'co_filename',
+                '__traceback__', 'pathname', 'metaclass', '__class__', 'cr_origin', 'ag_code', '_source_traceback'}
+# A script gets the path of its own source file from the command line, for example "open(sys.argv[0])", or from a
+# warning that it gives, for example "WarningMessage.filename". The names count only in a changed listed file, as a
+# bare __file__ does.
+SELF_NAMES = {'argv', 'orig_argv', 'filename', 'warnings'}
+# In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
+# "pytest --doctest-modules". A file system can ignore case, for example "PYDOC src.auth.store", so the words match in
+# each case.
+DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
+                       rb'|doctest|__file__|__spec__|__code__|co_consts|find_spec|importlib|pkgutil|inspect|runpy'
+                       # A stack dump gives the source file of each frame, also in a compound name such as
+                       # faulthandler.dump_traceback or format_traceback.
+                       rb'|traceback|faulthandler|dump_c_stack'
+                       # A docs generator publishes the docstrings, for example Sphinx autodoc or mkdocstrings.
+                       rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe'
+                       # A shell can run Python, for example python3 -c "vars(store)". Thus each name of the Python
+                       # rules is also a word, at word boundaries, so the two lists cannot drift apart.
+                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(DOC_NAMES | ORIGIN_NAMES)) + rb')\b'
+                       # A plain name with leading or trailing underscores is the same reader, for example __dir__.
+                       rb'|\b_+(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(BARE_NAMES)) + rb')_*\b'
+                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(BARE_NAMES)) + rb')_+\b',
+                       re.IGNORECASE)
+# The signatures of a zip file, at any place, and of other compressed files, at the start.
+ZIP = re.compile(rb'PK\x03\x04|PK\x05\x06|PK\x06\x06')
+COMPRESSED = (b'\x1f\x8b', b'BZh', b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b"7z\xbc\xaf\x27\x1c")
+# A .gitattributes file with one of these attributes changes the bytes that a checkout writes. A .lfsconfig file sets
+# the LFS store.
+CHECKOUT = re.compile(rb'filter|working-tree-encoding|ident|lfs', re.IGNORECASE)
+# Python copies each docstring into the bytecode cache, for example __pycache__/store.cpython-314.pyc. An ignore file
+# lists these paths, but no program runs it.
+CACHE_WORDS = re.compile(rb'__pycache__|\.py[co]\b|pycache_prefix|cache_from_source|cache_tag', re.IGNORECASE)
+IGNORE_FILES = {'.gitignore', '.dockerignore', '.hgignore', '.npmignore'}
+# A text in one of these encodings can hide a reader in ASCII or in bytes that are not ASCII, for example UTF-7, a
+# Unicode escape or an EBCDIC code page.
+ENCODED = re.compile(rb'utf[-_ ]?7|\bu7\b|unicode[-_ ]?1[-_ ]?1|unicode[-_ ]?escape|ebcdic|\b(?:cs)?(?:cp|ibm)[-_ ]?\d{2,5}\b',
+                     re.IGNORECASE)
+# A log record gives the source file of the code that logs, for example "%(filename)s" of logging.Formatter or
+# record.filename. Thus these fields count in each file, also in the str.format and string.Template styles.
+LOG_FIELDS = re.compile(rb'%\(\s*(?:filename|pathname|module)\s*\)|\{\s*(?:filename|pathname|module)\s*[!:}]'
+                        rb'|\$\{?(?:filename|pathname|module)\b')
+# A Windows volume can give a file a short name, for example LONGFI~1.PY or LO1A2B~1.PY, so a reader can open a listed
+# file with no part of its name. Thus each short name in a file fails closed.
+SHORT_NAME = re.compile(rb"[\w$#&@!%^(){}'`-]~\d")
+# The encodings that decode each ASCII byte to the same character, so the word rules read the text as Python reads it.
+# The names are in lower case, with "_" in place of "-" and of a space.
+PLAIN_CODECS = {'utf_8', 'utf8', 'u8', 'utf_8_sig', 'ascii', 'us_ascii', 'latin_1', 'latin1', 'iso_8859_1',
+                'iso8859_1', 'l1'}
+# A file with one of these extensions, or with a #! line of Python, is Python. The #! line must run Python directly: a
+# path to python, or /usr/bin/env and python, and one optional group of flags with no argument. A line such as
+# '#!/usr/bin/env -S sh -c ... python' names python, but it runs a shell, so it does not match.
+PYTHON = re.compile(rb'#! ?(?:/usr/bin/env +|(?:/[\w.+-]+)+/)python[0-9.]*(?: -[BdEIOPqsSuv]+)? *(?:\n|\Z)')
+# Python and a shell run a file with each name, so the gate reads each doc and each config.
+# These files name paths. The project config names its boundary files. If such a file parses as Python, it can have only
+# literal values, for example JSON.
+PATH_DATA = {'.github/gates.json', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS', '.gitattributes', '.gitignore'}
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
@@ -113,7 +255,7 @@ SHARED_CATEGORIES = [('GitHub config', ['.github/*']),
                      ('agent instructions', anywhere(AGENT_FILES)),
                      ('agent config', anywhere(['.agents/*', '.claude/*', '.codex/*', '.gemini/*'])),
                      ('dependency manifest', anywhere(MANIFESTS))]
-CONFIG_KEYS = ['code', 'security_sources', 'not_security', 'boundaries', 'level1', 'generated']
+CONFIG_KEYS = ['code', 'security_sources', 'not_security', 'boundaries', 'level1', 'generated', 'docstring_only']
 
 
 class GateError(Exception):
@@ -330,6 +472,94 @@ class GitHub:
         """Return True if the commit is on the main branch of the repository."""
         data = self.call('GET', '/repos/%s/compare/%s...main' % (repo, commit))
         return data.get('status') in ('ahead', 'identical')
+
+    def mode(self, ref, path):
+        """Return the Git mode of the file at the commit, for example 100644 or 100755, or None if it does not exist."""
+        folder, name = posixpath.split(path)
+        tree = self.call('GET', '/repos/%s/git/trees/%s' % (self.repo, urllib.parse.quote('%s:%s' % (ref, folder), safe='/:')))
+        if not isinstance(tree, dict) or tree.get('truncated') or not isinstance(tree.get('tree'), list):
+            raise GateError('The GitHub API did not give the Git tree of %s at %s.' % (show(folder or '.'), ref[:12]))
+        return next((x.get('mode') for x in tree['tree'] if x.get('path') == name and x.get('type') == 'blob'), None)
+
+    def parents(self, commit):
+        """Return the parent SHAs of the commit, in order."""
+        data = self.call('GET', '/repos/%s/commits/%s' % (self.repo, commit))
+        return [x.get('sha') for x in (data or {}).get('parents') or []]
+
+    def tree_files(self, ref):
+        """Return {path: bytes} for each file of the tree at the commit. The tarball of the commit gives all files in one call."""
+        request = urllib.request.Request(API + '/repos/%s/tarball/%s' % (self.repo, ref), headers={
+            'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read(TARBALL_BYTES + 1)
+        if len(data) > TARBALL_BYTES:
+            raise GateError('The tarball of %s is larger than %d bytes.' % (ref[:12], TARBALL_BYTES))
+        found, links, total = {}, {}, 0
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+            # The limit counts each entry, also the folders and the links.
+            for count, member in enumerate(archive, 1):
+                if count > TREE_FILES:
+                    raise GateError('The tree of %s has more than %d files.' % (ref[:12], TREE_FILES))
+                if member.islnk():
+                    raise GateError('The tree of %s has a hard link.' % ref[:12])
+                if member.issym():
+                    links[member.name.split('/', 1)[-1]] = member.linkname
+                    continue
+                if not member.isfile():
+                    continue
+                total += member.size
+                if total > TREE_BYTES:
+                    raise GateError('The tree of %s is larger than %d bytes.' % (ref[:12], TREE_BYTES))
+                # The first part of each name is the top folder of the tarball.
+                found[member.name.split('/', 1)[-1]] = archive.extractfile(member).read()
+        raw = dict(found)
+        # A file system can ignore the case of a name or change its Unicode form. Then two paths of the tree can be one
+        # file in a checkout, so this fails closed.
+        names = {}
+        for path in list(found) + list(links):
+            key = fold(path)
+            if key in names:
+                raise GateError('The paths %s and %s of the tree of %s can be one file in a checkout.' % (
+                    show(names[key]), show(path), ref[:12]))
+            names[key] = path
+        # A link gets the content of its target in the tree, so the reader check reads it with the rules of the link path.
+        # A link with no target file fails closed, because a file system can find the target in another case, for
+        # example "payload -> SRC/AUTH/STORE.PY".
+        for path in links:
+            target, hops = path, 0
+            while target in links and hops <= len(links):
+                target, hops = posixpath.normpath(posixpath.join(posixpath.dirname(target), links[target])), hops + 1
+            if target in found:
+                found[path] = found[target]
+            elif target in ('.', '/') or target.startswith(('../', '/')) or target == '..' or \
+                    any(x.startswith(target + '/') for x in list(found) + list(links)):
+                # A link to a folder gives a second name to each file in it, for example payload/store.py for
+                # "payload -> src/auth". A link out of the tree can come back into it. Both fail closed.
+                raise GateError('The link %s goes to a folder or out of the tree of %s.' % (show(path), ref[:12]))
+            else:
+                raise GateError('The link %s has no target file in the tree of %s.' % (show(path), ref[:12]))
+        # The tarball omits a file with the export-ignore attribute, and it has no submodule. Thus the Git tree must
+        # agree with the tarball, so that no file can hide a reader.
+        tree = self.call('GET', '/repos/%s/git/trees/%s?recursive=1' % (self.repo, ref))
+        if not isinstance(tree, dict) or tree.get('truncated') or not isinstance(tree.get('tree'), list):
+            raise GateError('The GitHub API did not give the full Git tree of %s.' % ref[:12])
+        if any(x.get('type') == 'commit' for x in tree['tree']):
+            raise GateError('The tree of %s has a submodule.' % ref[:12])
+        missing = sorted({x.get('path') for x in tree['tree'] if x.get('type') == 'blob'} - set(found) - set(links))
+        if missing:
+            raise GateError('The tarball of %s does not have %s, for example by export-ignore.' % (ref[:12], show(missing[0])))
+        # The tarball can change the bytes of a file, for example by export-subst or an eol rule. Thus each file and link
+        # of the tarball must have the blob SHA of the Git tree.
+        for item in tree['tree']:
+            path = item.get('path')
+            if item.get('type') != 'blob':
+                continue
+            link = item.get('mode') == '120000'
+            if link != (path in links):
+                raise GateError('The tarball of %s gives %s as a different kind of file.' % (ref[:12], show(path)))
+            if blob_sha(links[path].encode() if link else raw[path]) != item.get('sha'):
+                raise GateError('The tarball of %s changes %s, for example by export-subst.' % (ref[:12], show(path)))
+        return found
 
     def post_comment(self, body):
         self.call('POST', '/repos/%s/issues/%d/comments' % (self.repo, self.number), {'body': body})
@@ -687,6 +917,463 @@ def bump_check(gh, pr, files):
     return proved, None
 
 
+def code_tree(data):
+    """Return the ast dump of the Python source without its docstrings. A docstring is the first statement of a module,
+    class or function, if the statement is only a string constant. The tree has no comments."""
+    tree = ast.parse(data)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                node.body = node.body[1:]
+    return ast.dump(tree)
+
+
+def docstring_starts(tree):
+    """Return the start (line, column) of each docstring in the tree."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                found.add((first.value.lineno, first.value.col_offset))
+    return found
+
+
+def docstring_nodes(tree):
+    """Return (owner, constant) for each docstring in the tree, in the order of ast.walk."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                found.append((node, first.value))
+    return found
+
+
+# After a docstring, a line can have only spaces and a comment.
+LINE_END = re.compile(rb'[ \t\f]*(?:#[^\r\n]*)?\r?')
+
+
+def traceback_reason(before, after):
+    """Return the reason if a changed docstring can show in a traceback or a warning, else None. A traceback prints
+    the lines of the instruction that fails. The instruction that makes a class has the lines of all of the class
+    statement, for example when __init_subclass__ fails. Another instruction can share a line with a docstring, for
+    example 'def run(): "Run."; fail()'. Thus a changed docstring cannot be the docstring of a class, and its lines
+    can have no other code. A compile warning also prints its source line, so the head can give no warning."""
+    old, new = docstring_nodes(ast.parse(before)), docstring_nodes(ast.parse(after))
+    if len(old) != len(new):
+        return 'adds or removes a docstring'
+    # Python prints the source line of a compile warning, for example of an invalid escape such as \\q in a docstring.
+    with warnings.catch_warnings(record=True) as found:
+        warnings.simplefilter('always')
+        try:
+            compile(after, '<listed file>', 'exec', dont_inherit=True)
+        except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
+            return 'does not compile at the head (%s)' % type(error).__name__
+    # Only a warning of the compile counts. Other code can give a warning at the same time, for example a ResourceWarning.
+    found = [x for x in found if x.filename == '<listed file>']
+    if found:
+        return 'gives a compile warning (%s), and Python prints its source line' % found[0].category.__name__
+    # The ast rows count a line break \r as one line, and the split below does not.
+    if re.search(rb'\r(?!\n)', after):
+        return 'has a line break \\r with no \\n'
+    lines = after.split(b'\n')
+    for (_, was), (owner, node) in zip(old, new):
+        if was.value == node.value:
+            continue
+        if isinstance(owner, ast.ClassDef):
+            return 'changes the docstring of the class %s, and a traceback of the class statement prints it' % owner.name
+        first, last = lines[node.lineno - 1], lines[node.end_lineno - 1]
+        if first[:node.col_offset].strip(b' \t\f') or not LINE_END.fullmatch(last[node.end_col_offset:]):
+            return 'has a changed docstring on a line with other code, and a traceback can print the line'
+    return None
+
+
+def text_without_docstrings(data):
+    """Return the source encoding and the source text, with a mark in place of each docstring. Thus each byte outside
+    the docstrings must stay the same: each comment, each line break, each backslash and each space. A tool can read a
+    comment and its physical line, for example "# nosec" or a "# /// script" block, so no comment can move or change.
+    The mark is a null character, and Python source cannot contain one."""
+    docs = docstring_starts(ast.parse(data))
+    encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    # Strict UTF-8 gives one text for one byte string, so equal text is equal bytes. Another encoding, for example
+    # unicode_escape, can give equal text for different bytes, and a tool can read the bytes. It fails closed.
+    if encoding not in ('utf-8', 'utf-8-sig'):
+        raise ValueError('the source encoding %s is not UTF-8' % encoding)
+    text = data.decode(encoding)
+    starts = [0]
+    for line in re.split(r'(?<=\n)', text):
+        starts.append(starts[-1] + len(line))
+    spans = []
+    for token in tokenize.tokenize(io.BytesIO(data).readline):
+        # The ast column counts UTF-8 bytes. The token column counts characters.
+        if token.type == tokenize.STRING and (token.start[0], len(token.line[:token.start[1]].encode())) in docs:
+            start, end = starts[token.start[0] - 1] + token.start[1], starts[token.end[0] - 1] + token.end[1]
+            # A line break other than \n can move the rows of tokenize. Then the span is wrong, and the check fails.
+            if text[start:end] != token.string:
+                raise ValueError('the docstring position is not clear')
+            spans.append((start, end))
+    for start, end in reversed(spans):
+        text = text[:start] + '\0' + text[end:]
+    return encoding, text
+
+
+def literal_tree(tree):
+    """Return True if the tree has only literal values, for example the tree of a JSON file."""
+    return all(isinstance(node, (ast.Module, ast.Expr, ast.Constant, ast.Dict, ast.List, ast.Tuple, ast.Set, ast.Load,
+                                 ast.UnaryOp, ast.USub)) or (isinstance(node, ast.Name) and node.id in ('true', 'false', 'null'))
+               for node in ast.walk(tree))
+
+
+def doc_reader(path, data, changed, files):
+    """Return the reason if the file can read a docstring, else None. A bare __doc__ or __file__ names its own module
+    only, so it counts only in a changed file. A string that contains the name of a changed file can open it. Python
+    can run a file with each name, so each file that parses gets the Python rules. Each file that is not Python also
+    gets the word rules, because a shell can run a doc or a config. Only a file of PATH_DATA can name a listed file."""
+    # The gate cannot read a compressed file. Python runs a zip file, also after a #! line, for example a .pyz app.
+    if ZIP.search(data) or data.startswith(COMPRESSED):
+        return 'is an archive or a compressed file'
+    # A file that is not text can hold a packed reader in a form that the gate cannot read, for example zlib data.
+    if not is_text(data):
+        return 'is not UTF-8, UTF-16 or UTF-32 text'
+    # A checkout can write other bytes than the blob. A Git LFS pointer gets the object of the LFS store, and a filter,
+    # a working-tree-encoding or an ident attribute changes the bytes. The gate reads only the blob.
+    if data.startswith(b'version https://git-lfs.github.com/spec/'):
+        return 'is a Git LFS pointer'
+    if posixpath.basename(path) in ('.gitattributes', '.lfsconfig') and CHECKOUT.search(data):
+        return 'changes the bytes of a checkout'
+    # A .py file with a #! line of another program, for example #!/bin/sh, is not only Python.
+    python = (path.endswith(('.py', '.pyw')) and not data.startswith(b'#!')) or PYTHON.match(data)
+    try:
+        tree = ast.parse(data)
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
+        if python:
+            return 'does not parse at the head (%s)' % type(error).__name__
+        tree = None
+    if tree is not None and not (path in PATH_DATA and literal_tree(tree)):
+        reason = python_reader(tree, changed, files)
+        if reason:
+            return reason
+    # The tree of a Python file has no comments, but another program can read a comment, for example "#include" of
+    # cpp. Thus the word rules also read the comments of a Python file.
+    texts, where = ([python_comments(data)], ' in a comment') if python else (text_forms(data), '')
+    if any(DOC_WORDS.search(x) for x in texts):
+        return 'names a docstring reader' + where
+    if posixpath.basename(path) not in IGNORE_FILES and any(CACHE_WORDS.search(x) for x in texts):
+        return 'names the bytecode cache' + where
+    if any(ENCODED.search(x) for x in texts):
+        return 'names an encoding that can hide a reader' + where
+    if any(SHORT_NAME.search(x) for x in texts):
+        return 'names a Windows short name' + where
+    if any(LOG_FIELDS.search(x) for x in texts):
+        return 'names a log record field of the source file' + where
+    if path in PATH_DATA:
+        return None
+    name = file_name_in(files, texts)
+    if name:
+        return 'names the file %s%s' % (show(name), where)
+    name = glob_name_in(files, texts) if posixpath.basename(path) not in IGNORE_FILES else None
+    return 'names the file %s with a wildcard%s' % (show(name), where) if name else None
+
+
+def python_comments(data):
+    """Return the comments of the Python source, one on each line. If the source does not tokenize, return all of it."""
+    try:
+        return b'\n'.join(x.string.encode('utf-8') for x in tokenize.tokenize(io.BytesIO(data).readline)
+                          if x.type == tokenize.COMMENT)
+    except (tokenize.TokenError, SyntaxError, ValueError, UnicodeDecodeError):
+        return data
+
+
+def fold(text):
+    """Return the text in one case and one Unicode form. A file system can ignore the case of a name, for example on
+    Windows, or change its Unicode form, for example on macOS."""
+    return unicodedata.normalize('NFKC', unicodedata.normalize('NFKC', text).casefold())
+
+
+def file_name_in(files, forms):
+    """Return the first name of files that is in one of the byte forms, in each case and Unicode form, else None."""
+    texts = [fold(x.decode('utf-8', 'replace')) for x in forms]
+    return next((x for x in sorted(files) if any(fold(x) in y for y in texts)), None)
+
+
+# A shell word: a run of characters with no space, quote or shell operator.
+SHELL_WORD = re.compile(r'[^\s\'"`;|&<>()=]+')
+# A list mark at the start of a line, for example "* item" in a doc or " * text" in a block comment, is not a glob.
+LIST_MARK = re.compile(r'(?m)^[ \t]*(?:#[ \t]*)?[*+-][ \t]+')
+
+
+def glob_part(part):
+    """Return a regex for the shell glob, with more matches than the shell gives. A brace with a comma, for example
+    {a,b}, matches each text."""
+    out, index = '', 0
+    while index < len(part):
+        char = part[index]
+        end = part.find(']', index + 2) if char == '[' else part.find('}', index + 1) if char == '{' else -1
+        if char == '*':
+            out += '.*'
+        elif char == '?':
+            out += '.'
+        elif char == '[' and end > 0:
+            body = part[index + 1:end]
+            out += '[' + ('^' + body[1:] if body.startswith('!') else body).replace('\\', '\\\\') + ']'
+            index = end
+        elif char == '{' and end > 0 and ',' in part[index:end]:
+            out += '.*'
+            index = end
+        else:
+            out += re.escape(char)
+        index += 1
+    return out
+
+
+def glob_name_in(files, forms):
+    """Return the first name of files that a shell glob in one of the byte forms can match, else None. A launcher
+    such as "sh src/auth/*.py" runs a listed file with no full name of it. The last part of each glob must not match
+    the name, in each case and Unicode form."""
+    names = sorted(files)
+    for form in forms:
+        text = LIST_MARK.sub(' ', fold(form.decode('utf-8', 'replace')))
+        for word in SHELL_WORD.findall(text):
+            # A block comment mark such as /* or /** is not a glob. A word of only * is a product in most languages, for
+            # example "a * b", so it does not count.
+            if not re.search(r'[*?\[{]', word) or re.fullmatch(r'/\*+|\*+/|\*+', word):
+                continue
+            part = word.rstrip('/').rsplit('/', 1)[-1]
+            try:
+                pattern = re.compile(glob_part(part), re.DOTALL)
+            except re.error:
+                pattern = re.compile('.*', re.DOTALL)
+            name = next((x for x in names if pattern.fullmatch(fold(x))), None)
+            if name:
+                return name
+    return None
+
+
+def is_text(data):
+    """Return True if the bytes are UTF-8 text, or UTF-16 or UTF-32 text with a BOM."""
+    for bom, encoding in ((codecs.BOM_UTF32_LE, 'utf-32'), (codecs.BOM_UTF32_BE, 'utf-32'), (codecs.BOM_UTF16_LE, 'utf-16'),
+                          (codecs.BOM_UTF16_BE, 'utf-16'), (b'', 'utf-8')):
+        if data.startswith(bom):
+            try:
+                data.decode(encoding)
+                return True
+            except UnicodeDecodeError:
+                pass
+    return False
+
+
+def text_forms(data):
+    """Return the forms of the file for the word rules, in UTF-8. A UTF-16 or UTF-32 script, for example a PowerShell
+    script, has a NUL byte between its characters, and it can have no BOM. Thus the forms are the bytes, the bytes with
+    no NUL byte, and the text in each UTF-16 and UTF-32 byte order. A file name that is not ASCII, for example é.py, is
+    in UTF-8 only in the last forms."""
+    forms = [data, data.replace(b'\0', b'')]
+    if b'\0' in data or data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        for encoding in ('utf-16-le', 'utf-16-be', 'utf-32-le', 'utf-32-be'):
+            forms.append(data.decode(encoding, 'replace').encode('utf-8', 'replace'))
+    return forms
+
+
+def metaclass_name(node):
+    """Return True if the expression or the name is type or a metaclass, for example abc.ABCMeta."""
+    name = node if isinstance(node, str) else node.id if isinstance(node, ast.Name) else \
+        node.attr if isinstance(node, ast.Attribute) else ''
+    return name == 'type' or name.endswith(('Meta', 'Metaclass', 'MetaClass', 'EnumType'))
+
+
+def python_reader(tree, changed, files):
+    """Return the reason if the Python tree can read a docstring, else None."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == '__doc__':
+            return 'reads __doc__ of an object'
+        if isinstance(node, ast.Constant) and node.value == '__doc__':
+            return 'names __doc__ in a string'
+        if isinstance(node, ast.ImportFrom) and any(x.name == '__doc__' for x in node.names):
+            return 'imports __doc__ of a module'
+        if isinstance(node, ast.Name) and node.id == '__doc__' and changed:
+            return 'reads its own __doc__'
+        # A class can put a descriptor in __doc__, for example "__doc__ = Recorder()", and it then gets a copied
+        # docstring.
+        if isinstance(node, ast.Name) and node.id == '__doc__' and isinstance(node.ctx, ast.Store):
+            return 'sets __doc__'
+        if isinstance(node, ast.Name) and node.id == '__file__' and changed:
+            return 'names its own source file'
+        if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
+            return 'reads %s of an object' % node.attr
+        # A log call such as logger.exception prints the traceback, and a keyword can give a reader to a call, for
+        # example log.error(text, exc_info=True).
+        if isinstance(node, ast.Attribute) and node.attr == 'exception':
+            return 'reads exception of an object'
+        if isinstance(node, ast.keyword) and (node.arg or '').strip('_') in DOC_NAMES | BARE_NAMES:
+            return 'names %s in a keyword' % node.arg
+        # A log record, a warning and a stack frame summary give their source file in filename.
+        if isinstance(node, ast.Attribute) and node.attr == 'filename':
+            return 'reads filename of an object'
+        # A metaclass gets the namespace of each class that uses it, also of a subclass with no metaclass keyword. A
+        # metaclass is a subclass of type, for example "class Runner(type)", or the result of a call with three
+        # arguments, for example 'type("Runner", (type,), {"__new__": run})'.
+        if isinstance(node, ast.ClassDef) and any(metaclass_name(x) for x in node.bases):
+            return 'defines a metaclass'
+        if isinstance(node, ast.Call) and len(node.args) == 3 and metaclass_name(node.func):
+            return 'makes a class with a metaclass'
+        # A name can be a second name for a metaclass, for example "from builtins import type as factory" or
+        # "factory = type(int)". Thus each use of type or of a metaclass name counts, and so does a base that is a call.
+        if isinstance(node, ast.ClassDef) and any(isinstance(x, ast.Call) for x in node.bases):
+            return 'has a base that is a call'
+        found = [x for x in ([node] if isinstance(node, (ast.Name, ast.Attribute)) else
+                             [y.name.split('.')[-1] for y in node.names] if isinstance(node, (ast.Import, ast.ImportFrom))
+                             else []) if metaclass_name(x)]
+        if found:
+            return 'names a metaclass'
+        # A class pattern reads an attribute with no ast.Attribute, for example "case object(__doc__=text)".
+        found = ({'__doc__'} | ORIGIN_NAMES) & set(node.kwd_attrs if isinstance(node, ast.MatchClass) else
+                                                    [node.arg] if isinstance(node, ast.keyword) else [])
+        if found:
+            return 'reads %s in a pattern or a keyword' % sorted(found)[0]
+        # A decode can get a reader from text in another encoding, for example b'...'.decode('utf-7') or
+        # open(path, encoding='cp037'). Thus each encoding of a decode must be a literal of PLAIN_CODECS.
+        codec = decode_codec(node)
+        if codec is not None:
+            name = codec.value.lower().replace('-', '_').replace(' ', '_') if isinstance(codec, ast.Constant) and \
+                isinstance(codec.value, str) else None
+            if not (isinstance(codec, ast.Constant) and codec.value is None) and name not in PLAIN_CODECS:
+                return 'decodes text with an encoding that is not UTF-8, ASCII or Latin-1'
+        if isinstance(node, ast.Constant) and node.value in ORIGIN_NAMES:
+            return 'names %s in a string' % node.value
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            # Compare bytes, with each name in UTF-8. A str value can have a lone surrogate. A bytes value can be UTF-16
+            # or UTF-32 text, so it gets the same forms as a file.
+            raw = node.value if isinstance(node.value, bytes) else node.value.encode('utf-8', 'surrogatepass')
+            forms = text_forms(raw) if isinstance(node.value, bytes) else [raw]
+            # A command string can name the file at each place, for example "cat src/auth/store.py | sh".
+            name = file_name_in(files, forms)
+            if name:
+                return 'names the file %s' % show(name)
+            # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
+            if any(CACHE_WORDS.search(x) for x in forms):
+                return 'names the bytecode cache in a string'
+            if any(DOC_WORDS.search(x) for x in forms):
+                return 'names a docstring reader in a string'
+            # A call that the decode rule does not know can get the encoding from a string, for example
+            # Path.read_text("utf-7").
+            if any(ENCODED.search(x) for x in forms):
+                return 'names an encoding that can hide a reader in a string'
+            if any(SHORT_NAME.search(x) for x in forms):
+                return 'names a Windows short name in a string'
+            if any(LOG_FIELDS.search(x) for x in forms):
+                return 'names a log record field of the source file in a string'
+            name = glob_name_in(files, forms)
+            if name:
+                return 'names the file %s with a wildcard' % show(name)
+        # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.
+        names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
+                 else [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                 else [x.name for x in node.names] if isinstance(node, ast.Import)
+                 else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
+        if changed and set(names) & SELF_NAMES:
+            return 'names its own source file in %s' % sorted(set(names) & SELF_NAMES)[0]
+        # A name with other leading or trailing underscores is the same reader, for example __dir__ for dir.
+        found = {y for x in names for y in (x.split('.')[0], x.split('.')[0].strip('_'))} & (DOC_NAMES | BARE_NAMES)
+        if found:
+            return 'names %s' % sorted(found)[0]
+        # A name that contains a reader word is also a reader, for example xdoctest or doctest_module. The rules above
+        # check a bare __doc__ or __file__, which names its own module.
+        word = next((x for x in names if x not in ('__doc__', '__file__') and DOC_WORDS.search(x.encode())), None)
+        if word:
+            return 'names %s' % word
+    return None
+
+
+def decode_codec(node):
+    """Return the encoding node of a call that can decode text, else None. This includes a keyword "encoding" of each
+    call, the first argument of a decode method, and the encoding argument of str, open, fdopen, TextIOWrapper and the
+    read_text and open methods of pathlib."""
+    if not isinstance(node, ast.Call):
+        return None
+    for keyword in node.keywords:
+        if keyword.arg == 'encoding' or keyword.arg is None:
+            return keyword.value
+    name = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id if isinstance(node.func, ast.Name) \
+        else ''
+    index = {'decode': 0, 'str': 1, 'TextIOWrapper': 1, 'open': 3, 'fdopen': 3, 'read_text': 0}.get(name)
+    # Path.open has no file argument, so its encoding is the third argument.
+    if name == 'open' and isinstance(node.func, ast.Attribute) and not (isinstance(node.func.value, ast.Name) and
+                                                                         node.func.value.id in ('io', 'os', 'builtins')):
+        index = 2
+    if index is not None and len(node.args) > index:
+        return node.args[index]
+    if index is not None and any(isinstance(x, ast.Starred) for x in node.args):
+        return node.args[-1]
+    return None
+
+
+def line_form(data):
+    """Return the bytes with each line break \\r\\n as \\n."""
+    return data.replace(b'\r\n', b'\n')
+
+
+def docstring_check(gh, pr, listed, files):
+    """Return (proved lines, None) if each listed path is a .py file that changes only the text of its docstrings, else
+    (None, reason). The file keeps its path. The tree of the base and the merge are equal after the docstrings go.
+    No file of the merge tree reads a docstring. The merge is the test merge commit of GitHub, with the parents base
+    and head, so the check also reads the files that the base branch has and the head does not have."""
+    head, base, merge = pr['head']['sha'], pr['base']['sha'], pr.get('merge_commit_sha') or ''
+    if not re.fullmatch(r'[0-9a-f]{40}', merge) or gh.parents(merge) != [base, head]:
+        return None, 'GitHub has no test merge commit of the base %s and the head %s.' % (base[:12], head[:12])
+    status = {x['path']: x for x in files}
+    proved, merged = [], {}
+    for path in listed:
+        item = status.get(path)
+        if not path.endswith('.py'):
+            return None, '%s is not a .py file.' % show(path)
+        if not item or item.get('status') != 'modified' or item.get('previous'):
+            return None, '%s is not a modified file with the same path.' % show(path)
+        before, after = gh.content(gh.repo, path, base), gh.content(gh.repo, path, merge)
+        if not before or not after:
+            return None, 'Cannot read %s at the base or the head.' % show(path)
+        if before[1] == after[1]:
+            return None, '%s changes no byte, so the change is not a docstring change.' % show(path)
+        mode = gh.mode(base, path)
+        # The contents API reads the target of a link, so a listed link can change its target with no byte change.
+        if mode not in ('100644', '100755') or gh.mode(merge, path) != mode:
+            return None, '%s changes its file mode, or it is not a regular file.' % show(path)
+        # A #! line of another program, for example #!/bin/sh, runs the docstring as shell code. A shell runs an
+        # executable file with no #! line. Thus the file must be Python when it runs.
+        if (after[1].startswith(b'#!') or mode == '100755') and not PYTHON.match(after[1]):
+            return None, '%s can run as a program that is not Python.' % show(path)
+        try:
+            same = code_tree(before[1]) == code_tree(after[1])
+            text = text_without_docstrings(before[1]) == text_without_docstrings(after[1])
+        except (SyntaxError, ValueError, RecursionError, MemoryError, tokenize.TokenError, LookupError) as error:
+            return None, '%s does not parse at the base or the head (%s).' % (show(path), type(error).__name__)
+        if not same:
+            return None, '%s changes code, not only docstrings.' % show(path)
+        if not text:
+            return None, '%s changes a byte outside the docstrings, or adds or removes a docstring.' % show(path)
+        reason = traceback_reason(before[1], after[1])
+        if reason:
+            return None, '%s %s.' % (show(path), reason)
+        proved.append('%s: only the text of docstrings changes.' % show(path))
+        merged[path] = after[1]
+    if not proved:
+        return None, 'No listed path changed.'
+    basenames = {posixpath.basename(x) for x in listed}
+    for path, data in sorted(gh.tree_files(merge).items()):
+        # The tarball gives a link the bytes of its target. A link or a copy of a listed file is a second name for it,
+        # for example "sh payload" for "payload -> src/auth/store.py".
+        # A checkout can change the line breaks with no attribute, for example by core.autocrlf, so the bytes are
+        # compared with each \r\n as \n.
+        alias = next((x for x in sorted(merged) if x != path and line_form(merged[x]) == line_form(data)), None)
+        if alias:
+            return None, '%s has the bytes of %s, so a docstring can be code.' % (show(path), show(alias))
+        reason = doc_reader(path, data, path in listed, basenames)
+        if reason:
+            return None, '%s %s, so a docstring can be code.' % (show(path), reason)
+    return proved, None
+
+
 def security_review(gh, config, pr, paths, complete, comments, changed, files=()):
     """Return (passed, lines, drop, summary). The summary is one line that tells the agent if a security review is necessary."""
     labels = {x['name'] for x in pr['labels']}
@@ -716,6 +1403,23 @@ def security_review(gh, config, pr, paths, complete, comments, changed, files=()
             return (True, ['Each listed path is a proved copy or pin change. No review is necessary.'] + proved, [],
                     'Security review: not needed. Each listed path is a proved copy or pin change.')
         lines.append('Copy check: ' + reason)
+        # A change of only the docstring text in listed .py files needs no review. The code does not change. The owner
+        # turns this on for each path in "docstring_only" of the project config, after the owner confirms that no tool
+        # of the project reads those docstrings. The config comes from the base branch, so a PR cannot turn it on. The
+        # proof below is a second layer: it finds the usual readers, but no list of names can find each reader.
+        if config['docstring_only']:
+            outside = next((x for x in listed if not match(x, config['docstring_only'])), None)
+            if outside:
+                proved, reason = None, '%s is not in "docstring_only" of the project config.' % show(outside)
+            else:
+                try:
+                    proved, reason = docstring_check(gh, pr, listed, files)
+                except (OSError, GateError, KeyError, TypeError, ValueError, tarfile.TarError) as error:
+                    proved, reason = None, 'The docstring check failed closed (%s: %s).' % (type(error).__name__, show(error))
+            if proved:
+                return (True, ['Each listed path changes only the text of docstrings. No review is necessary.'] + proved, [],
+                        'Security review: not needed. Only docstrings changed in a listed path.')
+            lines.append('Docstring check: ' + reason)
     if not complete:
         lines.append('The PR has more files than GitHub lists, so the change is security relevant.')
     if listed:
