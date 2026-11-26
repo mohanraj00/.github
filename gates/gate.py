@@ -88,6 +88,9 @@ DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get
                        rb'|doctest|__file__|__spec__|__code__|co_consts|find_spec|importlib|pkgutil|inspect|runpy'
                        # A docs generator publishes the docstrings, for example Sphinx autodoc or mkdocstrings.
                        rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe')
+# The signatures of a zip file, at any place, and of other compressed files, at the start.
+ZIP = re.compile(rb'PK\x03\x04|PK\x05\x06|PK\x06\x06')
+COMPRESSED = (b'\x1f\x8b', b'BZh', b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b"7z\xbc\xaf\x27\x1c")
 # A file with one of these extensions, or with a #! line that names python, is Python.
 PYTHON = re.compile(rb'#![^\n]*python')
 # Python and a shell run a file with each name, so the gate reads each doc and each config.
@@ -866,6 +869,9 @@ def doc_reader(path, data, changed, files):
     only, so it counts only in a changed file. A string that contains the name of a changed file can open it. Python
     can run a file with each name, so each file that parses gets the Python rules. Each file that is not Python also
     gets the word rules, because a shell can run a doc or a config. Only a file of PATH_DATA can name a listed file."""
+    # The gate cannot read a compressed file. Python runs a zip file, also after a #! line, for example a .pyz app.
+    if ZIP.search(data) or data.startswith(COMPRESSED):
+        return 'is an archive or a compressed file'
     python = path.endswith(('.py', '.pyw')) or PYTHON.match(data)
     try:
         tree = ast.parse(data)

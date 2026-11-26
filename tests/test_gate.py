@@ -1,5 +1,6 @@
 """The shared gates pass and fail as the project standard says. The tests use a fake GitHub API and no network."""
 import contextlib
+import gzip
 import io
 import json
 import os
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 import urllib.error
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'gates'))
@@ -805,6 +807,18 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.ps1': data})
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: tools/run.ps1 names', message)
+
+    def test_an_archive_needs_a_review(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('__main__.py', 'from src.auth import store\nexec(store.__doc__)\n' * 20)
+        cases = {'reader.pyz': b'#!/usr/bin/env python3\n' + data.getvalue(), 'reader.zip': data.getvalue(),
+                 'reader.gz': gzip.compress(b'exec(store.__doc__)\n')}
+        for path, body in cases.items():
+            with self.subTest(path):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, path: body})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: %s is an archive or a compressed file' % path, message)
 
     def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
         tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
