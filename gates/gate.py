@@ -125,7 +125,12 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              # A profiler gives the source file of each function that it profiles, for example FunctionProfile.file_name
              # of pstats.
              'cProfile', 'profile', 'pstats', '_lsprof', 'get_stats_profile', 'func_profiles', 'FunctionProfile', 'yappi',
-             'pyinstrument', 'line_profiler', 'memory_profiler', 'scalene', 'py_spy', 'austin', 'context_line', 'context_lines', 'pre_context', 'post_context',
+             'pyinstrument', 'line_profiler', 'memory_profiler', 'scalene', 'py_spy', 'austin',
+             # An exception hook or a log call with exc_info prints the source file of each frame.
+             'excepthook', 'unraisablehook', 'exc_info', 'stack_info', 'last_exc', 'last_value', 'last_type',
+             'print_exception', 'print_exc', 'format_exception', 'format_exc', 'print_last', 'print_stack',
+             'format_stack', 'print_tb', 'format_tb', 'extract_tb', 'walk_tb', 'showsyntaxerror',
+             'default_exception_handler', 'call_exception_handler', 'context_line', 'context_lines', 'pre_context', 'post_context',
              # The interpreter records the source file and line of the code that makes a coroutine, for example in
              # cr_origin.
              'set_coroutine_origin_tracking_depth', 'get_coroutine_origin_tracking_depth'}
@@ -1141,6 +1146,12 @@ def python_reader(tree, changed, files):
             return 'names its own source file'
         if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
             return 'reads %s of an object' % node.attr
+        # A log call such as logger.exception prints the traceback, and a keyword can give a reader to a call, for
+        # example log.error(text, exc_info=True).
+        if isinstance(node, ast.Attribute) and node.attr == 'exception':
+            return 'reads exception of an object'
+        if isinstance(node, ast.keyword) and (node.arg or '').strip('_') in DOC_NAMES | BARE_NAMES:
+            return 'names %s in a keyword' % node.arg
         # A log record, a warning and a stack frame summary give their source file in filename.
         if isinstance(node, ast.Attribute) and node.attr == 'filename':
             return 'reads filename of an object'
