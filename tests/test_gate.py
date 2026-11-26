@@ -759,11 +759,17 @@ def tarball(files, top='owner-project-aaaaaaa', links=None):
 
 
 class TreeFilesTest(unittest.TestCase):
-    def read(self, data):
+    def read(self, data, tree=None):
         response = mock.MagicMock()
         response.__enter__.return_value.read.side_effect = lambda size: data[:size]
-        with mock.patch.object(gate.urllib.request, 'urlopen', return_value=response) as opened:
+        if tree is None:
+            with gate.tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
+                tree = {'truncated': False, 'tree': [{'path': x.name.split('/', 1)[-1], 'type': 'tree' if x.isdir() else 'blob'}
+                                                     for x in archive if '/' in x.name]}
+        with mock.patch.object(gate.urllib.request, 'urlopen', return_value=response) as opened, \
+                mock.patch.object(gate.GitHub, 'call', return_value=tree) as call:
             found = gate.GitHub(REPO, 7, 'token').tree_files(HEAD)
+        call.assert_called_once_with('GET', '/repos/owner/project/git/trees/%s?recursive=1' % HEAD)
         self.assertEqual(opened.call_args[0][0].full_url, 'https://api.github.com/repos/owner/project/tarball/' + HEAD)
         return found
 
@@ -792,6 +798,17 @@ class TreeFilesTest(unittest.TestCase):
             archive.addfile(link)
         with self.assertRaisesRegex(gate.GateError, 'hard link'):
             self.read(data.getvalue())
+
+    def test_a_tree_that_does_not_agree_with_the_tarball_fails_closed(self):
+        data = tarball({'src/a.py': b'x = 1\n'})
+        blob = {'path': 'src/a.py', 'type': 'blob'}
+        cases = {'export-ignore': ({'truncated': False, 'tree': [blob, {'path': 'reader.py', 'type': 'blob'}]}, 'does not have reader.py'),
+                 'submodule': ({'truncated': False, 'tree': [blob, {'path': 'lib', 'type': 'commit'}]}, 'has a submodule'),
+                 'truncated': ({'truncated': True, 'tree': [blob]}, 'did not give the full Git tree'),
+                 'no list': ({'truncated': False}, 'did not give the full Git tree')}
+        for name, (tree, expected) in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(gate.GateError, expected):
+                self.read(data, tree)
 
     def test_a_large_tree_fails_closed(self):
         cases = {'TARBALL_BYTES': 'larger than 10 bytes', 'TREE_BYTES': 'larger than 10 bytes', 'TREE_FILES': 'more than 2 files'}

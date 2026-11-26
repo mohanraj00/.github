@@ -390,6 +390,16 @@ class GitHub:
                 found[path] = found[target]
             elif path.endswith('.py'):
                 raise GateError('The link %s has no target file in the tree of %s.' % (show(path), ref[:12]))
+        # The tarball omits a file with the export-ignore attribute, and it has no submodule. Thus the Git tree must
+        # agree with the tarball, so that no file can hide a reader.
+        tree = self.call('GET', '/repos/%s/git/trees/%s?recursive=1' % (self.repo, ref))
+        if not isinstance(tree, dict) or tree.get('truncated') or not isinstance(tree.get('tree'), list):
+            raise GateError('The GitHub API did not give the full Git tree of %s.' % ref[:12])
+        if any(x.get('type') == 'commit' for x in tree['tree']):
+            raise GateError('The tree of %s has a submodule.' % ref[:12])
+        missing = sorted({x.get('path') for x in tree['tree'] if x.get('type') == 'blob'} - set(found) - set(links))
+        if missing:
+            raise GateError('The tarball of %s does not have %s, for example by export-ignore.' % (ref[:12], show(missing[0])))
         return found
 
     def post_comment(self, body):
