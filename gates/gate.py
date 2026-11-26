@@ -83,9 +83,7 @@ DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get
                        rb'|doctest|__file__|__spec__|find_spec|importlib|pkgutil|inspect|runpy')
 # A file with one of these extensions, or with a #! line that names python, is Python.
 PYTHON = re.compile(rb'#![^\n]*python')
-# Python runs a file with each name, so a doc or a config that parses as Python is Python. A doc or a config that does
-# not parse is not code, and the gate does not read it.
-DOC_TEXT = ('.md', '.rst', '.txt')
+# Python and a shell run a file with each name, so the gate reads each doc and each config.
 # These files name paths. The project config names its boundary files. If such a file parses as Python, it can have only
 # literal values, for example JSON.
 PATH_DATA = {'.github/gates.json', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS', '.gitattributes', '.gitignore'}
@@ -843,7 +841,7 @@ def doc_reader(path, data, changed, files):
     """Return the reason if the file can read a docstring, else None. A bare __doc__ or __file__ names its own module
     only, so it counts only in a changed file. A string that ends with the name of a changed file can open it. Python
     can run a file with each name, so each file that parses gets the Python rules. Each file that is not Python also
-    gets the word rules, because a shell or a config can run a reader."""
+    gets the word rules, because a shell can run a doc or a config. Only a file of PATH_DATA can name a listed file."""
     python = path.endswith(('.py', '.pyw')) or PYTHON.match(data)
     try:
         tree = ast.parse(data)
@@ -855,10 +853,12 @@ def doc_reader(path, data, changed, files):
         reason = python_reader(tree, changed, files)
         if reason:
             return reason
-    if python or path.endswith(DOC_TEXT) or path in PATH_DATA:
+    if python:
         return None
     if DOC_WORDS.search(data):
         return 'names a docstring reader'
+    if path in PATH_DATA:
+        return None
     name = next((x for x in sorted(files) if x.encode() in data), None)
     return 'names the file %s' % show(name) if name else None
 

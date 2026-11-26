@@ -694,6 +694,9 @@ class DocstringCheckTest(unittest.TestCase):
             'md reader': ({'docs/run.md': b'print(getdoc(x))\n'}, 'docs/run.md names getdoc'),
             'config reader': ({'.github/gates.json': b'run(store.__doc__)\n'}, '.github/gates.json reads __doc__ of an object'),
             'config path': ({'tox.ini': b'x = "src/auth/store.py"\n'}, 'tox.ini names the file src/auth/store.py'),
+            'txt shell reader': ({'tools/reader.txt': b"python -c 'from src.auth import store; exec(store.__doc__)'\n"},
+                                 'tools/reader.txt names a docstring reader'),
+            'md path': ({'docs/run.md': b'Run `sh < src/auth/store.py`.\n'}, 'docs/run.md names the file store.py'),
             'shell origin': ({'bin/run.sh': b'python -c "import auth.store as s; print(s.__file__)"\n'},
                              'bin/run.sh names a docstring reader'),
             'file path': ({'src/cli.py': b'Path("src/auth/store.py").read_text()\n'}, 'src/cli.py names the file src/auth/store.py'),
@@ -719,7 +722,7 @@ class DocstringCheckTest(unittest.TestCase):
                 'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',
                 '.github/gates.json': b'{"version": 1, "boundaries": ["src/auth/store.py"]}\n',
                 '.github/CODEOWNERS': b'src/auth/store.py @owner\n',
-                'README.md': b'Read `__doc__` with `pydoc`.\n'}
+                'README.md': b'The store keeps the rows.\n'}
         passed, message, _ = self.run_check(tree=tree)
         self.assertTrue(passed, message)
 
