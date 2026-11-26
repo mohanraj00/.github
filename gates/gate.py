@@ -78,7 +78,8 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'typer', 'fire', 'docopt', 'ply', 'find_spec', 'get_filename', 'importlib', 'pkgutil', 'inspect', 'ast',
              'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
              'griffe', 'dis', 'marshal', 'help', 'vars', 'globals', 'locals', 'dir', 'getmembers', 'getmembers_static',
-             '__getattribute__', '_getframe', 'currentframe', 'gc', 'get_referents', 'get_referrers', 'ctypes'}
+             '__getattribute__', '__getstate__', '__reduce__', '__reduce_ex__', 'copyreg', '_getframe', 'currentframe',
+             'gc', 'get_referents', 'get_referrers', 'ctypes'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
