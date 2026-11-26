@@ -618,8 +618,23 @@ class DocstringCheckTest(unittest.TestCase):
         self.assertIn('src/auth/store.py: only the text of docstrings changes.', message)
         self.assertEqual(output, {'summary': 'Security review: not needed. Only docstrings changed in a listed path.'})
 
-    def test_a_docstring_after_code_on_its_line_passes(self):
-        old = 'def f(x="é"): "Doc."\n'.encode()
+    def test_a_docstring_that_a_traceback_can_print_needs_a_review(self):
+        # A traceback prints the lines of the instruction that fails. A class statement has all of its lines.
+        line = 'has a changed docstring on a line with other code, and a traceback can print the line.'
+        cases = {'code before': ('def f(x="é"): "Doc."\n'.encode(), line),
+                 'code after': (b'def f():\n    "Doc."; fail()\n', line),
+                 'continuation': (b'def f():\n    "Doc." \\\n    ; fail()\n', line),
+                 'class': (b'class Store(Base):\n    """Doc."""\n    rows = 1\n',
+                           'changes the docstring of the class Store, and a traceback of the class statement prints it.'),
+                 'lone cr': (b'def f():\n    "Doc."\r    return 1\n', 'has a line break \\r with no \\n.')}
+        for name, (old, expected) in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=old.replace(b'Doc.', b'Doc two.'))
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py ' + expected, message)
+
+    def test_a_docstring_with_a_comment_on_its_line_passes(self):
+        old = b'"""Doc."""  # The module.\n\nclass Store:\n    """Same."""\n\n    def rows(self):\n        "Doc."\n'
         passed, message, _ = self.run_check(old=old, new=old.replace(b'Doc.', b'Doc two.'))
         self.assertTrue(passed, message)
 

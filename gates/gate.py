@@ -915,6 +915,45 @@ def docstring_starts(tree):
     return found
 
 
+def docstring_nodes(tree):
+    """Return (owner, constant) for each docstring in the tree, in the order of ast.walk."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                found.append((node, first.value))
+    return found
+
+
+# After a docstring, a line can have only spaces and a comment.
+LINE_END = re.compile(rb'[ \t\f]*(?:#[^\r\n]*)?\r?')
+
+
+def traceback_reason(before, after):
+    """Return the reason if a changed docstring can show in a traceback, else None. A traceback prints the source lines
+    of the instruction that fails. The instruction that makes a class has the lines of all of the class statement, for
+    example when __init_subclass__ fails. Another instruction can share a line with a docstring, for example
+    'def run(): "Run."; fail()'. Thus a changed docstring cannot be the docstring of a class, and its lines
+    can have no other code."""
+    old, new = docstring_nodes(ast.parse(before)), docstring_nodes(ast.parse(after))
+    if len(old) != len(new):
+        return 'adds or removes a docstring'
+    # The ast rows count a line break \r as one line, and the split below does not.
+    if re.search(rb'\r(?!\n)', after):
+        return 'has a line break \\r with no \\n'
+    lines = after.split(b'\n')
+    for (_, was), (owner, node) in zip(old, new):
+        if was.value == node.value:
+            continue
+        if isinstance(owner, ast.ClassDef):
+            return 'changes the docstring of the class %s, and a traceback of the class statement prints it' % owner.name
+        first, last = lines[node.lineno - 1], lines[node.end_lineno - 1]
+        if first[:node.col_offset].strip(b' \t\f') or not LINE_END.fullmatch(last[node.end_col_offset:]):
+            return 'has a changed docstring on a line with other code, and a traceback can print the line'
+    return None
+
+
 def text_without_docstrings(data):
     """Return the source encoding and the source text, with a mark in place of each docstring. Thus each byte outside
     the docstrings must stay the same: each comment, each line break, each backslash and each space. A tool can read a
@@ -1196,6 +1235,9 @@ def docstring_check(gh, pr, listed, files):
             return None, '%s changes code, not only docstrings.' % show(path)
         if not text:
             return None, '%s changes a byte outside the docstrings, or adds or removes a docstring.' % show(path)
+        reason = traceback_reason(before[1], after[1])
+        if reason:
+            return None, '%s %s.' % (show(path), reason)
         proved.append('%s: only the text of docstrings changes.' % show(path))
         merged[path] = after[1]
     if not proved:
