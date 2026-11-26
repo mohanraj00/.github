@@ -681,6 +681,10 @@ class DocstringCheckTest(unittest.TestCase):
             'click': ({'src/cli.py': b'import click.testing\n'}, 'src/cli.py names click'),
             'from click': ({'src/cli.py': b'from click import command\n'}, 'src/cli.py names click'),
             'doctest config': ({'pyproject.toml': b'addopts = "--doctest-modules"\n'}, 'pyproject.toml names a docstring reader'),
+            'script reader': ({'bin/run': b'#!/usr/bin/env python3\nimport ast\nast.get_docstring(t)\n'}, 'bin/run names get_docstring'),
+            'pyw reader': ({'src/app.pyw': b'import ast\nast.get_docstring(t)\n'}, 'src/app.pyw names get_docstring'),
+            'shell reader': ({'bin/run.sh': b'python -c "import ast; ast.get_docstring(t)"\n'}, 'bin/run.sh names a docstring reader'),
+            'shell path': ({'bin/run.sh': b'python - < src/auth/store.py\n'}, 'bin/run.sh names the file store.py'),
             'broken file': ({'tests/bad.py': b'def (\n'}, 'tests/bad.py does not parse at the head (SyntaxError)'),
         }
         for name, (tree, expected) in cases.items():
@@ -694,6 +698,8 @@ class DocstringCheckTest(unittest.TestCase):
     def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
         tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
                 'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',
+                '.github/gates.json': b'{"version": 1, "boundaries": ["src/auth/store.py"]}\n',
+                '.github/CODEOWNERS': b'src/auth/store.py @owner\n',
                 'README.md': b'Read `__doc__` with `pydoc`.\n'}
         passed, message, _ = self.run_check(tree=tree)
         self.assertTrue(passed, message)

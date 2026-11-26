@@ -71,9 +71,14 @@ TREE_FILES = 20000
 # files, or makes the help text of a command from the docstrings.
 DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'getsourcefile', 'getfile',
              'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click', 'typer', 'fire'}
-# In a file that is not Python and not a doc, these words can read a docstring, for example "pytest --doctest-modules".
-DOC_WORDS = re.compile(rb'__doc__|getdoc|pydoc|doctest')
+# In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
+# "pytest --doctest-modules".
+DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|linecache|pydoc|doctest')
+# A file with one of these extensions, or with a #! line that names python, is Python.
+PYTHON = re.compile(rb'#![^\n]*python')
 DOC_TEXT = ('.md', '.rst', '.txt')
+# These files name paths, but no tool runs them as code. The project config names its boundary files.
+PATH_DATA = {'.github/gates.json', 'CODEOWNERS', '.github/CODEOWNERS', 'docs/CODEOWNERS', '.gitattributes', '.gitignore'}
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
@@ -810,8 +815,13 @@ def tokens_without_docstrings(data):
 def doc_reader(path, data, changed, files):
     """Return the reason if the file can read a docstring, else None. A bare __doc__ or __file__ names its own module
     only, so it counts only in a changed file. A string that ends with the name of a changed file can open it."""
-    if not path.endswith('.py'):
-        return 'names a docstring reader' if not path.endswith(DOC_TEXT) and DOC_WORDS.search(data) else None
+    if not path.endswith(('.py', '.pyw')) and not PYTHON.match(data):
+        if path.endswith(DOC_TEXT) or path in PATH_DATA:
+            return None
+        if DOC_WORDS.search(data):
+            return 'names a docstring reader'
+        name = next((x for x in sorted(files) if x.encode() in data), None)
+        return 'names the file %s' % show(name) if name else None
     try:
         tree = ast.parse(data)
     except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
