@@ -172,6 +172,9 @@ IGNORE_FILES = {'.gitignore', '.dockerignore', '.hgignore', '.npmignore'}
 # Unicode escape or an EBCDIC code page.
 ENCODED = re.compile(rb'utf[-_ ]?7|\bu7\b|unicode[-_ ]?1[-_ ]?1|unicode[-_ ]?escape|ebcdic|\b(?:cs)?(?:cp|ibm)[-_ ]?\d{2,5}\b',
                      re.IGNORECASE)
+# A Windows volume can give a file a short name, for example LONGFI~1.PY or LO1A2B~1.PY, so a reader can open a listed
+# file with no part of its name. Thus each short name in a file fails closed.
+SHORT_NAME = re.compile(rb"[\w$#&@!%^(){}'`-]~\d")
 # The encodings that decode each ASCII byte to the same character, so the word rules read the text as Python reads it.
 # The names are in lower case, with "_" in place of "-" and of a space.
 PLAIN_CODECS = {'utf_8', 'utf8', 'u8', 'utf_8_sig', 'ascii', 'us_ascii', 'latin_1', 'latin1', 'iso_8859_1',
@@ -1049,6 +1052,8 @@ def doc_reader(path, data, changed, files):
         return 'names the bytecode cache' + where
     if any(ENCODED.search(x) for x in texts):
         return 'names an encoding that can hide a reader' + where
+    if any(SHORT_NAME.search(x) for x in texts):
+        return 'names a Windows short name' + where
     if path in PATH_DATA:
         return None
     name = file_name_in(files, texts)
@@ -1176,6 +1181,8 @@ def python_reader(tree, changed, files):
             # Path.read_text("utf-7").
             if any(ENCODED.search(x) for x in forms):
                 return 'names an encoding that can hide a reader in a string'
+            if any(SHORT_NAME.search(x) for x in forms):
+                return 'names a Windows short name in a string'
         # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
                  else [node.name] if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
