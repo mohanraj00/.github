@@ -96,7 +96,12 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'base64', 'binascii', 'zlib', 'gzip', 'bz2', 'lzma', 'zstd', 'compression', 'zipfile', 'tarfile',
              'unpack_archive', 'pickle', 'shelve', 'fromhex', 'codecs', 'rot13', 'rot_13', 'uu', 'quopri', 'gunzip',
              'zcat', 'bzcat', 'xzcat', 'unxz', 'unzstd', 'zstdcat', 'xxd', 'unzip', 'uudecode', 'base32', 'basenc',
-             'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio'}
+             'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio',
+             # This tuple of functools holds the string '__doc__'.
+             'WRAPPER_ASSIGNMENTS'}
+# The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
+# with other underscores, for example __dir__.
+BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring, or the namespace of a
 # module, which holds __doc__, for example "store.__dict__", "f.__globals__" or the globals of a frame. An attribute or a string
@@ -118,7 +123,10 @@ DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get
                        rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe'
                        # A shell can run Python, for example python3 -c "vars(store)". Thus each name of the Python
                        # rules is also a word, at word boundaries, so the two lists cannot drift apart.
-                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(DOC_NAMES | ORIGIN_NAMES)) + rb')\b',
+                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(DOC_NAMES | ORIGIN_NAMES)) + rb')\b'
+                       # A plain name with leading or trailing underscores is the same reader, for example __dir__.
+                       rb'|\b_+(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(BARE_NAMES)) + rb')_*\b'
+                       rb'|\b(?:' + b'|'.join(re.escape(x.encode()) for x in sorted(BARE_NAMES)) + rb')_+\b',
                        re.IGNORECASE)
 # The signatures of a zip file, at any place, and of other compressed files, at the start.
 ZIP = re.compile(rb'PK\x03\x04|PK\x05\x06|PK\x06\x06')
@@ -1040,7 +1048,8 @@ def python_reader(tree, changed, files):
                  else [x.name for x in node.names] + [node.module or ''] if isinstance(node, ast.ImportFrom) else [])
         if changed and set(names) & SELF_NAMES:
             return 'names its own source file in %s' % sorted(set(names) & SELF_NAMES)[0]
-        found = {x.split('.')[0] for x in names} & DOC_NAMES
+        # A name with other leading or trailing underscores is the same reader, for example __dir__ for dir.
+        found = {y for x in names for y in (x.split('.')[0], x.split('.')[0].strip('_'))} & (DOC_NAMES | BARE_NAMES)
         if found:
             return 'names %s' % sorted(found)[0]
         # A name that contains a reader word is also a reader, for example xdoctest or doctest_module. The rules above
