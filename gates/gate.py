@@ -98,7 +98,9 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'zcat', 'bzcat', 'xzcat', 'unxz', 'unzstd', 'zstdcat', 'xxd', 'unzip', 'uudecode', 'base32', 'basenc',
              'openssl', 'tar', 'bzip2', 'xz', '7z', 'cpio',
              # This tuple of functools holds the string '__doc__'.
-             'WRAPPER_ASSIGNMENTS'}
+             'WRAPPER_ASSIGNMENTS',
+             # The bytecode cache holds a copy of each docstring.
+             'pycache_prefix', 'cache_from_source', 'source_from_cache', 'cache_tag'}
 # The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
 # with other underscores, for example __dir__.
 BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
@@ -134,6 +136,10 @@ COMPRESSED = (b'\x1f\x8b', b'BZh', b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b"7z\xb
 # A .gitattributes file with one of these attributes changes the bytes that a checkout writes. A .lfsconfig file sets
 # the LFS store.
 CHECKOUT = re.compile(rb'filter|working-tree-encoding|ident|lfs', re.IGNORECASE)
+# Python copies each docstring into the bytecode cache, for example __pycache__/store.cpython-314.pyc. An ignore file
+# lists these paths, but no program runs it.
+CACHE_WORDS = re.compile(rb'__pycache__|\.py[co]\b|pycache_prefix|cache_from_source|cache_tag', re.IGNORECASE)
+IGNORE_FILES = {'.gitignore', '.dockerignore', '.hgignore', '.npmignore'}
 # A file with one of these extensions, or with a #! line of Python, is Python. The #! line must run Python directly: a
 # path to python, or /usr/bin/env and python, and one optional group of flags with no argument. A line such as
 # '#!/usr/bin/env -S sh -c ... python' names python, but it runs a shell, so it does not match.
@@ -943,6 +949,8 @@ def doc_reader(path, data, changed, files):
     texts = text_forms(data)
     if any(DOC_WORDS.search(x) for x in texts):
         return 'names a docstring reader'
+    if posixpath.basename(path) not in IGNORE_FILES and any(CACHE_WORDS.search(x) for x in texts):
+        return 'names the bytecode cache'
     if path in PATH_DATA:
         return None
     name = file_name_in(files, texts)
@@ -1039,6 +1047,8 @@ def python_reader(tree, changed, files):
             if name:
                 return 'names the file %s' % show(name)
             # A string can give a reader to a tool, for example pytest.main(["--doctest-modules"]).
+            if CACHE_WORDS.search(raw):
+                return 'names the bytecode cache in a string'
             if DOC_WORDS.search(raw):
                 return 'names a docstring reader in a string'
         # A def also counts, for example "def __prepare__(name, bases)" of a metaclass.

@@ -845,6 +845,12 @@ class DocstringCheckTest(unittest.TestCase):
             'shell dunder': ({'bin/run.sh': b'python3 -c "print(m.__dir__())"\n'}, 'bin/run.sh names a docstring reader'),
             'wrapper names': ({'tools/run.py': b'import functools\nfor a in functools.WRAPPER_ASSIGNMENTS:\n    pass\n'},
                               'tools/run.py names WRAPPER_ASSIGNMENTS'),
+            'cache shell': ({'bin/run.sh': b'strings src/auth/__pycache__/store.cpython-314.pyc | sh\n'},
+                            'bin/run.sh names the bytecode cache'),
+            'cache glob': ({'bin/run.sh': b'cat build/*.pyc | sh\n'}, 'bin/run.sh names the bytecode cache'),
+            'cache python': ({'tools/run.py': b'paths = glob("**/__pycache__/*", recursive=True)\n'},
+                             'tools/run.py names the bytecode cache in a string'),
+            'cache prefix': ({'tools/run.py': b'import sys\nroot = sys.pycache_prefix\n'}, 'tools/run.py names pycache_prefix'),
             'xdoctest': ({'tools/run.py': b'import xdoctest\nxdoctest.doctest_module("src.auth.store", command="all")\n'},
                          'tools/run.py names xdoctest'),
             'reader word': ({'tools/run.py': b'from tools.docs import run_doctests\nrun_doctests(store)\n'},
@@ -927,6 +933,11 @@ class DocstringCheckTest(unittest.TestCase):
                 passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.ps1': data})
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: tools/run.ps1 names', message)
+
+    def test_an_ignore_file_can_name_the_bytecode_cache(self):
+        tree = {STORE: STORE_DOCS, '.gitignore': b'__pycache__/\n*.pyc\n'}
+        passed, message, _ = self.run_check(tree=tree)
+        self.assertTrue(passed, message)
 
     def test_a_file_that_is_not_text_needs_a_review(self):
         import zlib
