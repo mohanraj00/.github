@@ -36,7 +36,7 @@ PROMPTS={
 FAILED='NO VALID CLAUDE REVIEW'
 # The comment when the gate job stops a request. It has no head, so it does not stop an older review of a head as FAILED does.
 STOPPED='The Claude review did not start.'
-# The gates accept only this marker, from the workflow bot. findings is unknown if the model text does not start with a valid count.
+# The gates accept only this marker, from the workflow bot. findings is unknown if no line of the model text is a valid count.
 # base is the merge base of the base branch and the head. The diff of the review starts at this commit, and the gates accept
 # the marker only if it is the current merge base. The gates do not accept a v1 marker, because it has no base.
 # run is the ID of the workflow run that posts the marker. The gates read this run from the API and accept the marker only
@@ -44,6 +44,19 @@ STOPPED='The Claude review did not start.'
 MARKER=re.compile(r'<!-- claude-review:v2 kind=(code|security) head=([0-9a-f]{40}) base=([0-9a-f]{40}) findings=(\d+|unknown) run=([1-9][0-9]{0,19}) -->')
 RUN=re.compile(r'[1-9][0-9]{0,19}')
 COUNT=re.compile(r'Findings: (0|[1-9][0-9]{0,3})')
+# A line before the count line must be plain prose. Markdown and HTML have many forms of quoted text: code fences,
+# code spans, quote lines, HTML tags and comments. A list of forms to refuse misses a form, so the gate permits only
+# these characters. A line with a different character gives unknown, also if the text is not quoted.
+# A double quote is not permitted, because prose can quote the count line between two double quotes.
+PLAIN=re.compile(r"[A-Za-z0-9 \t.,:;'\u2019()/?!%+@-]*")
+# An apostrophe is permitted only in a word, for example I'll. An apostrophe at a different position can be a quote mark.
+APOSTROPHE=re.compile(r"(?<![A-Za-z])['\u2019]|['\u2019](?![A-Za-z])")
+# A list item before the count line can contain the count line as a lazy continuation, so a list marker gives unknown.
+# The other containers start with *, > or #, and PLAIN does not permit these characters.
+LIST=re.compile(r'[ \t]*(?:[-+]|\d{1,9}[.)])(?:[ \t]|$)')
+# The last text line before the count line must end a sentence. A line that ends with a colon or with no mark can
+# introduce the count line as a quote.
+SENTENCE=re.compile(r'[.!?][ \t]*')
 # A line that starts with a severity tag P0 to P3 or a path:line reference is a finding.
 # A list marker, a heading mark, **, [ or ` can come first.
 # The pattern is anchored at the start of the line, so a clean review that names a file in a sentence still gives 0.
@@ -101,15 +114,26 @@ def signal_text(text):
     """Return the text in NFKC form with no format characters, so that a full-width or a zero-width character cannot hide a signal."""
     return ''.join(c for c in unicodedata.normalize('NFKC',text) if unicodedata.category(c)!='Cf')
 
+def prose(lines):
+    """Return True if the lines are plain prose that ends a sentence. These lines cannot quote the next line."""
+    lines=[signal_text(line) for line in lines]
+    if any(not PLAIN.fullmatch(line) or APOSTROPHE.search(line) or LIST.match(line) for line in lines):return False
+    text=[line.rstrip() for line in lines if line.strip()]
+    return not text or bool(SENTENCE.search(text[-1][-1:]))
+
 def findings(text):
-    """Return the count from the first line of the model text, or unknown.
-    The result is unknown if the text does not agree with the count: INCOMPLETE REVIEW on a line, a second count line
-    with a different number, or, for a count of 0, a finding line or a severity tag below the first line."""
-    first,_,rest=text.strip().partition('\n')
-    found=COUNT.fullmatch(first.strip())
-    if not found:return 'unknown'
-    count=found.group(1)
-    rest=signal_text(rest)
+    """Return the count from the first line of the model text that is a count line, or unknown.
+    The model can write a progress line before the count line. The other lines, above and below the count line, must
+    agree with the count. The count line has no indent. The result is unknown if no line is a count line, if a line
+    before the count line is not prose (see prose), or if one of the other lines has INCOMPLETE REVIEW, a count with a different number, or, for a count
+    of 0, a finding line or a severity tag."""
+    lines=text.strip().split('\n')
+    # The count line has no indent, so an indented code block or the body of a list item is not a count line.
+    at=next((i for i,line in enumerate(lines) if COUNT.fullmatch(line.rstrip())),None)
+    # A count line after quoted text can be text from the diff, not the count of the model.
+    if at is None or not prose(lines[:at]):return 'unknown'
+    count=COUNT.fullmatch(lines[at].rstrip()).group(1)
+    rest=signal_text('\n'.join(lines[:at]+lines[at+1:]))
     if INCOMPLETE.search(rest):return 'unknown'
     if any(int(n)!=int(count) for n in RECOUNT.findall(rest)):return 'unknown'
     if count=='0' and (FINDING.search(rest) or TAG.search(rest)):return 'unknown'

@@ -59,14 +59,17 @@ The agents use the owner login. Thus GitHub cannot tell if the owner or an agent
 
 #### Count of a model review
 
-The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The marker gives `findings=unknown` if the text of a Claude review does not agree with the count on its first line:
+The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The count line of a Claude review is the first line that is exactly `Findings: N`, with no indent. The model can write a progress line before it. The marker gives `findings=unknown` if no line is a count line, or if the text does not agree with the count:
 
-- `INCOMPLETE REVIEW` is on a line below the first line.
-- A later `Findings: N` line gives a different count.
-- The count is 0, and a later line starts with a severity tag or a `path:line` reference.
-- The count is 0, and a severity tag P0 to P3 is at any position in a later line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
+- A line before the count line has a character that is not plain prose. The permitted characters are letters, digits, spaces and `.,:;'’()/?!%+@-`. An apostrophe is permitted only in a word, for example `I'll`. A double quote is not permitted. Markdown and HTML have many forms of quoted text, for example code fences, code spans, quote lines and HTML tags. A list of forms to refuse can miss a form, so the gate permits only these characters. A backtick, `<`, `>`, `~`, `[` or `|` before the count line thus gives `findings=unknown`.
+- A line before the count line starts with a list marker (`-`, `+`, or a number and `.` or `)`). The count line can then be a lazy continuation of that list item.
+- The last text line before the count line does not end with `.`, `!` or `?`. A line that ends with a colon or with no mark can introduce the count line as a quote.
+- `INCOMPLETE REVIEW` is on a different line.
+- A different `Findings: N` line gives a different count.
+- The count is 0, and a different line starts with a severity tag or a `path:line` reference.
+- The count is 0, and a severity tag P0 to P3 is at any position in a different line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
 
-The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. A prompt injection in the diff can cause these two results.
+The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. The rules for the lines before the count line refuse quoted text, but they do not block a model that writes a false count line. A prompt injection in the diff can cause these three results. A count on the first line has the same limit.
 
 #### Events that do not start the gates
 

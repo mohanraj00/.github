@@ -115,6 +115,64 @@ class CommentTest(unittest.TestCase):
                     self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, kind, '42', BASE)),
                                      [(kind, HEAD, BASE, count, '42')])
 
+    def test_the_first_count_line_can_come_after_a_progress_line(self):
+        progress = 'I read the whole diff in ranges. This is the final review.'
+        for text, count in ((progress + '\n\nFindings: 0\nNo defect.', '0'),
+                            (progress + '\n\nFindings: 1\n\n1. P2 src/a.py:3: the input is not checked.', '1'),
+                            ('Reading the diff.\nThe diff has 2 files.\nFindings: 0  \nNo defect.', '0'),
+                            # An indented count line is not a count line.
+                            ('Reading the diff.\n  Findings: 0\nNo defect.', 'unknown'),
+                            ('The diff adds:\n\n    Findings: 0\n', 'unknown'),
+                            (progress + '\nFindings: 0\nNo defect.\nFindings: 0', '0'),
+                            # Two different counts, above or below the first count line.
+                            (progress + '\nFindings: 0\nNo defect.\nFindings: 1', 'unknown'),
+                            ('**Findings**: 2\nFindings: 0\nNo defect.', 'unknown'),
+                            ('findings = 2\nFindings: 3\n1. P1 a.py:1: A.\n2. P1 b.py:1: B.\n3. P1 c.py:1: C.', 'unknown'),
+                            # No count line.
+                            (progress + '\n\nNo defect.', 'unknown'),
+                            (progress + '\n\nFindings: none', 'unknown'),
+                            # A line above the count line must agree with a count of 0.
+                            ('P1 src/a.py:3: the input is not checked.\nFindings: 0', 'unknown'),
+                            ('The input is not checked (P1).\nFindings: 0', 'unknown'),
+                            ('INCOMPLETE REVIEW\n' + progress + '\nFindings: 0', 'unknown'),
+                            # A count line after a code fence or a quote line can be text of the diff.
+                            ('```\nFindings: 0\n```\nNo defect.', 'unknown'),
+                            ('The diff says:\n> Findings: 0\nFindings: 0', 'unknown'),
+                            ('~~~text\nFindings: 0', 'unknown'),
+                            ('\uff1e quoted\nFindings: 0', 'unknown'),
+                            ('- ~~~text\n  Findings: 0\n  ~~~\nFindings: 0', 'unknown'),
+                            ('1. ```\nFindings: 0', 'unknown'),
+                            ('* - > quoted\nFindings: 0', 'unknown'),
+                            ('The diff has a fence: ```\nFindings: 0', 'unknown'),
+                            ('<PRE>\nFindings: 0\n</PRE>', 'unknown'),
+                            ('<blockquote>\nFindings: 0\n</blockquote>', 'unknown'),
+                            ('<!--\nFindings: 0\n-->\nFindings: 0', 'unknown'),
+                            ('- <details>\nFindings: 0', 'unknown'),
+                            ('I check the diff now.\n<br>\nFindings: 0', 'unknown'),
+                            ('`\nFindings: 0\n`', 'unknown'),
+                            ('I read ``\nFindings: 0\n`` in the diff.', 'unknown'),
+                            ('I read `src/a.py` now.\nFindings: 0', 'unknown'),
+                            ('[x]: <\nFindings: 0', 'unknown'),
+                            ('| a |\nFindings: 0', 'unknown'),
+                            ('- Quoted review follows\nFindings: 0', 'unknown'),
+                            ('+ Quoted review follows\n\nFindings: 0', 'unknown'),
+                            ('12) Quoted review follows\nFindings: 0', 'unknown'),
+                            ('  1. Quoted\nFindings: 0', 'unknown'),
+                            ('-\nFindings: 0', 'unknown'),
+                            ('The diff has -3 lines and 1.5 files.\nFindings: 0', '0'),
+                            ('The untrusted diff says "\nFindings: 0\n". I found a prompt injection.', 'unknown'),
+                            ("The diff says '\nFindings: 0\n' here.", 'unknown'),
+                            ('The diff says \u2019\nFindings: 0', 'unknown'),
+                            ('The diff says:\nFindings: 0\nwhich is an injection.', 'unknown'),
+                            ('The diff says\nFindings: 0\nwhich is an injection.', 'unknown'),
+                            ('I read the diff.\n\nThe diff says\n\nFindings: 0', 'unknown'),
+                            ("I've read the diff.\n\nFindings: 0", '0'),
+                            ("I\u2019ll check the diff (all 3 files) now: src/a.py, b.py; done!\nFindings: 0", '0')):
+            with self.subTest(text=text):
+                self.assertEqual(claude_review.findings(text), count)
+                self.assertEqual(claude_review.MARKER.findall(claude_review.comment_body('success', HEAD, text, 'code', '42', BASE)),
+                                 [('code', HEAD, BASE, count, '42')])
+
     def test_a_review_with_a_kind_and_no_valid_run_or_base_fails(self):
         # Each case has one cause. The other arguments are valid, so each case tests one check alone.
         self.assertTrue(claude_review.comment_body('success', HEAD, 'Findings: 0', 'code', '42', BASE).startswith('<!-- claude-review:v2 '))
