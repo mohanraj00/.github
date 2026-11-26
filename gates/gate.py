@@ -886,6 +886,11 @@ def python_reader(tree, changed, files):
             return 'names its own source file'
         if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
             return 'reads %s of an object' % node.attr
+        # A class pattern reads an attribute with no ast.Attribute, for example "case object(__doc__=text)".
+        found = ({'__doc__'} | ORIGIN_NAMES) & set(node.kwd_attrs if isinstance(node, ast.MatchClass) else
+                                                    [node.arg] if isinstance(node, ast.keyword) else [])
+        if found:
+            return 'reads %s in a pattern or a keyword' % sorted(found)[0]
         if isinstance(node, ast.Constant) and node.value in ORIGIN_NAMES:
             return 'names %s in a string' % node.value
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
