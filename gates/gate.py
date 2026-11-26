@@ -30,7 +30,7 @@ PAGES = 30
 COMPARE_FILES = 300
 FORK_LINES = 400
 CHECKS = ['cross-review', 'security-review', 'acceptance', 'classify', 'claude-review']
-# The standard allows at most this number of reviews of one kind for each PR.
+# The standard allows at most this number of reviews of one kind for each PR. The review-cap-lifted label lifts it for one head and base.
 CLAUDE_CAP = 3
 # The cap of "@codex review" requests from an admin on one PR. The review-cap-lifted label lifts it for one head and base.
 CODEX_CAP = 3
@@ -885,7 +885,8 @@ def claude_markers(gh, pr, comments, kind):
 def claude_request(gh, pr, comments, changed, kind):
     """The gate job of the Claude review. It runs before the review job, and it has no secret.
     For a fork PR, it needs the stage 2 approval of acceptance. It applies the request rules of the standard: one review
-    of each kind for each head and merge base, and at most CLAUDE_CAP reviews of each kind for each PR."""
+    of each kind for each head and merge base, and at most CLAUDE_CAP reviews of each kind for each PR, unless the
+    review-cap-lifted label has a record for the current head and base."""
     labels = {x['name'] for x in pr['labels']}
     head, base = pr['head']['sha'], pr['base']['ref']
     lines, problems = [], []
@@ -896,8 +897,13 @@ def claude_request(gh, pr, comments, changed, kind):
                             'then adds the ready-for-review label or approves the PR. Then ask for the review again.' % (head[:12], show(base)))
     markers = claude_markers(gh, pr, comments, kind)
     if len(markers) >= CLAUDE_CAP:
-        problems.append('The PR has %d trusted Claude %s reviews. The cap is %d for each PR. Examine the approach, then '
-                        'report to the owner.' % (len(markers), kind, CLAUDE_CAP))
+        # The owner label lifts the cap for one head and base, with the same record rule as the Codex cap.
+        # The gate job has read permissions only, so it does not remove a stale label. cross-review removes it.
+        if label_state(gh, CAP_LABEL, labels, (head, base))[0]:
+            lines.append('The %s label applies to head %s, so the cap of %d reviews does not apply.' % (CAP_LABEL, head[:12], CLAUDE_CAP))
+        else:
+            problems.append('The PR has %d trusted Claude %s reviews. The cap is %d for each PR. Examine the approach, then '
+                            'report to the owner.' % (len(markers), kind, CLAUDE_CAP))
     current = gh.merge_base(base, head)
     if not current:
         problems.append('The gate cannot get the merge base of head %s and base %s.' % (head[:12], show(base)))
