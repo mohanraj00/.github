@@ -75,7 +75,7 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'getabsfile', 'getmodule', 'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click',
              'typer', 'fire', 'docopt', 'ply', 'find_spec', 'get_filename', 'importlib', 'pkgutil', 'inspect', 'ast',
              'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
-             'griffe', 'dis', 'marshal'}
+             'griffe', 'dis', 'marshal', 'help'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
 # code object of a function, for example "f.__code__.co_consts[0]", which is the docstring. An attribute or a string
 # with one of these names counts in each file.
@@ -939,8 +939,9 @@ def docstring_check(gh, pr, listed, files):
         if before[1] == after[1]:
             return None, '%s changes no byte, so the change is not a docstring change.' % show(path)
         mode = gh.mode(base, path)
-        if mode is None or mode != gh.mode(merge, path):
-            return None, '%s changes its file mode.' % show(path)
+        # The contents API reads the target of a link, so a listed link can change its target with no byte change.
+        if mode not in ('100644', '100755') or gh.mode(merge, path) != mode:
+            return None, '%s changes its file mode, or it is not a regular file.' % show(path)
         try:
             same = code_tree(before[1]) == code_tree(after[1])
             text = text_without_docstrings(before[1]) == text_without_docstrings(after[1])

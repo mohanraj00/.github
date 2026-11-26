@@ -627,11 +627,11 @@ class DocstringCheckTest(unittest.TestCase):
         passed, message, _ = self.run_check(new=STORE_OLD)
         self.assertFalse(passed)
         self.assertIn('Docstring check: src/auth/store.py changes no byte, so the change is not a docstring change.', message)
-        for modes in ({(MERGE, STORE): '100755'}, {(TIP, STORE): None}):
+        for modes in ({(MERGE, STORE): '100755'}, {(TIP, STORE): None}, {(TIP, STORE): '120000', (MERGE, STORE): '120000'}):
             with self.subTest(modes=modes):
                 passed, message, _ = self.run_check(modes=modes)
                 self.assertFalse(passed)
-                self.assertIn('Docstring check: src/auth/store.py changes its file mode.', message)
+                self.assertIn('Docstring check: src/auth/store.py changes its file mode, or it is not a regular file.', message)
 
     def test_a_code_change_with_a_docstring_change_needs_a_review(self):
         passed, message, _ = self.run_check(new=STORE_DOCS.replace(b'[:n]', b'[:n + 1]'))
@@ -730,6 +730,7 @@ class DocstringCheckTest(unittest.TestCase):
             'bytecode': ({'tools/run.py': b'run(deploy.__code__, shell=True)\n'}, 'tools/run.py reads __code__ of an object'),
             'code consts': ({'tools/run.py': b'run(code.co_consts[0])\n'}, 'tools/run.py reads co_consts of an object'),
             'dis': ({'tools/run.py': b'import dis\n'}, 'tools/run.py names dis'),
+            'help': ({'tools/run.py': b'help(store)\n'}, 'tools/run.py names help'),
             'shell origin': ({'bin/run.sh': b'python -c "import auth.store as s; print(s.__file__)"\n'},
                              'bin/run.sh names a docstring reader'),
             'file path': ({'src/cli.py': b'Path("src/auth/store.py").read_text()\n'}, 'src/cli.py names the file store.py'),
