@@ -75,14 +75,16 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'getabsfile', 'getmodule', 'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click',
              'typer', 'fire', 'docopt', 'ply', 'find_spec', 'get_filename', 'importlib', 'pkgutil', 'inspect', 'ast',
              'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
-             'griffe'}
-# These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin". An
-# attribute or a string with one of these names counts in each file.
-ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin'}
+             'griffe', 'dis', 'marshal'}
+# These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin", or the
+# code object of a function, for example "f.__code__.co_consts[0]", which is the docstring. An attribute or a string
+# with one of these names counts in each file.
+ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__code__', 'co_consts', 'co_code', 'gi_code',
+                'cr_code', 'f_code'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
 # "pytest --doctest-modules".
 DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
-                       rb'|doctest|__file__|__spec__|find_spec|importlib|pkgutil|inspect|runpy'
+                       rb'|doctest|__file__|__spec__|__code__|co_consts|find_spec|importlib|pkgutil|inspect|runpy'
                        # A docs generator publishes the docstrings, for example Sphinx autodoc or mkdocstrings.
                        rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe')
 # A file with one of these extensions, or with a #! line that names python, is Python.
