@@ -905,14 +905,13 @@ def doc_reader(path, data, changed, files):
 
 def text_forms(data):
     """Return the forms of the file for the word rules, in UTF-8. A UTF-16 or UTF-32 script, for example a PowerShell
-    script, has a NUL byte between its characters. Thus the forms are the bytes, the bytes with no NUL byte, and the
-    text that a BOM gives."""
+    script, has a NUL byte between its characters, and it can have no BOM. Thus the forms are the bytes, the bytes with
+    no NUL byte, and the text in each UTF-16 and UTF-32 byte order. A file name that is not ASCII, for example é.py, is
+    in UTF-8 only in the last forms."""
     forms = [data, data.replace(b'\0', b'')]
-    for bom, encoding in ((codecs.BOM_UTF32_LE, 'utf-32'), (codecs.BOM_UTF32_BE, 'utf-32'), (codecs.BOM_UTF16_LE, 'utf-16'),
-                          (codecs.BOM_UTF16_BE, 'utf-16')):
-        if data.startswith(bom):
+    if b'\0' in data or data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        for encoding in ('utf-16-le', 'utf-16-be', 'utf-32-le', 'utf-32-be'):
             forms.append(data.decode(encoding, 'replace').encode('utf-8', 'replace'))
-            break
     return forms
 
 

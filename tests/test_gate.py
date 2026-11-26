@@ -824,6 +824,12 @@ class DocstringCheckTest(unittest.TestCase):
         passed, message, _ = self.run_check(path=path, files=(path,), tree=tree)
         self.assertFalse(passed)
         self.assertIn('tools/run.py names the file \\u00e9.py', message)
+        for encoding in ('utf-16-le', 'utf-16-be', 'utf-32-le', 'utf-32-be', 'utf-16', 'utf-32'):
+            with self.subTest(encoding=encoding):
+                tree = {path: STORE_DOCS, 'tools/run.txt': 'cat src/auth/\u00e9.py | sh\n'.encode(encoding)}
+                passed, message, _ = self.run_check(path=path, files=(path,), tree=tree)
+                self.assertFalse(passed)
+                self.assertIn('tools/run.txt names the file \\u00e9.py', message)
 
     def test_a_link_or_a_copy_of_a_listed_file_needs_a_review(self):
         passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'payload': STORE_DOCS})
