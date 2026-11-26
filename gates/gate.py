@@ -70,10 +70,15 @@ TREE_FILES = 20000
 # A docstring is code if a file of the head tree reads it. A .py file that names one of these reads docstrings or source
 # files, or makes the help text of a command from the docstrings.
 DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'getsourcefile', 'getfile',
-             'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click', 'typer', 'fire'}
+             'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click', 'typer', 'fire',
+             'find_spec', 'get_filename', 'importlib', 'pkgutil'}
+# These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin". An
+# attribute or a string with one of these names counts in each file.
+ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
 # "pytest --doctest-modules".
-DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|linecache|pydoc|doctest')
+DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|linecache|pydoc|doctest'
+                       rb'|__file__|__spec__|find_spec|importlib|pkgutil')
 # A file with one of these extensions, or with a #! line that names python, is Python.
 PYTHON = re.compile(rb'#![^\n]*python')
 DOC_TEXT = ('.md', '.rst', '.txt')
@@ -797,19 +802,29 @@ def docstring_starts(tree):
     return found
 
 
-def tokens_without_docstrings(data):
-    """Return the tokens of the Python source, with a mark in place of each docstring. Thus each comment, each line
-    break and each token must stay the same, and only the text of an existing docstring can change. A tool can read a
-    comment, for example "# nosec" or a "# /// script" block, so no comment can change."""
+def text_without_docstrings(data):
+    """Return the source encoding and the source text, with a mark in place of each docstring. Thus each byte outside
+    the docstrings must stay the same: each comment, each line break, each backslash and each space. A tool can read a
+    comment and its physical line, for example "# nosec" or a "# /// script" block, so no comment can move or change.
+    The mark is a null character, and Python source cannot contain one."""
     docs = docstring_starts(ast.parse(data))
-    found = []
+    encoding = tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    text = data.decode(encoding)
+    starts = [0]
+    for line in re.split(r'(?<=\n)', text):
+        starts.append(starts[-1] + len(line))
+    spans = []
     for token in tokenize.tokenize(io.BytesIO(data).readline):
         # The ast column counts UTF-8 bytes. The token column counts characters.
         if token.type == tokenize.STRING and (token.start[0], len(token.line[:token.start[1]].encode())) in docs:
-            found.append((tokenize.STRING, None))
-        else:
-            found.append((token.type, token.string))
-    return found
+            start, end = starts[token.start[0] - 1] + token.start[1], starts[token.end[0] - 1] + token.end[1]
+            # A line break other than \n can move the rows of tokenize. Then the span is wrong, and the check fails.
+            if text[start:end] != token.string:
+                raise ValueError('the docstring position is not clear')
+            spans.append((start, end))
+    for start, end in reversed(spans):
+        text = text[:start] + '\0' + text[end:]
+    return encoding, text
 
 
 def doc_reader(path, data, changed, files):
@@ -837,6 +852,10 @@ def doc_reader(path, data, changed, files):
             return 'reads its own __doc__'
         if isinstance(node, ast.Name) and node.id == '__file__' and changed:
             return 'names its own source file'
+        if isinstance(node, ast.Attribute) and node.attr in ORIGIN_NAMES:
+            return 'reads %s of an object' % node.attr
+        if isinstance(node, ast.Constant) and node.value in ORIGIN_NAMES:
+            return 'names %s in a string' % node.value
         if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
             text = node.value if isinstance(node.value, str) else node.value.decode('latin-1')
             if any(text.endswith(x) for x in files):
@@ -871,13 +890,13 @@ def docstring_check(gh, pr, listed, files):
             return None, 'Cannot read %s at the base or the head.' % show(path)
         try:
             same = code_tree(before[1]) == code_tree(after[1])
-            tokens = tokens_without_docstrings(before[1]) == tokens_without_docstrings(after[1])
-        except (SyntaxError, ValueError, RecursionError, MemoryError, tokenize.TokenError) as error:
+            text = text_without_docstrings(before[1]) == text_without_docstrings(after[1])
+        except (SyntaxError, ValueError, RecursionError, MemoryError, tokenize.TokenError, LookupError) as error:
             return None, '%s does not parse at the base or the head (%s).' % (show(path), type(error).__name__)
         if not same:
             return None, '%s changes code, not only docstrings.' % show(path)
-        if not tokens:
-            return None, '%s changes a comment, a line break or a token, or adds or removes a docstring.' % show(path)
+        if not text:
+            return None, '%s changes a byte outside the docstrings, or adds or removes a docstring.' % show(path)
         proved.append('%s: only the text of docstrings changes.' % show(path))
     if not proved:
         return None, 'No listed path changed.'

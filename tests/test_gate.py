@@ -573,7 +573,7 @@ class Store:
         return self.data[:n]
 '''
 STORE_DOCS = STORE_OLD.replace(b'Return the rows.', b'Return the rows of the open snapshot.\n\n        The rows are a list.')
-TOKENS = 'src/auth/store.py changes a comment, a line break or a token, or adds or removes a docstring.'
+TOKENS = 'src/auth/store.py changes a byte outside the docstrings, or adds or removes a docstring.'
 
 
 class DocstringCheckTest(unittest.TestCase):
@@ -608,7 +608,10 @@ class DocstringCheckTest(unittest.TestCase):
                  'added docstring': b'"""New."""\n' + old,
                  'removed blank line': old.replace(b'subprocess\n\n', b'subprocess\n'),
                  'new line break': old.replace(b'(command, shell=True)', b'(command,\n                          shell=True)'),
-                 'moved comment': old.replace(b'  # Run it.', b'').replace(b'    # nosemgrep', b'    # nosemgrep  # Run it.')}
+                 'moved comment': old.replace(b'  # Run it.', b'').replace(b'    # nosemgrep', b'    # nosemgrep  # Run it.'),
+                 'backslash line': old.replace(b'return subprocess', b'return \\\n        subprocess'),
+                 'new space': old.replace(b'(command, shell', b'(command,  shell'),
+                 'crlf': old.replace(b'\n', b'\r\n')}
         for name, new in cases.items():
             with self.subTest(name):
                 passed, message, _ = self.run_check(old=old, new=new)
@@ -677,6 +680,13 @@ class DocstringCheckTest(unittest.TestCase):
             'ast reader': ({'src/cli.py': b'import ast\nexec(ast.get_docstring(tree))\n'}, 'src/cli.py names get_docstring'),
             'loader': ({'src/cli.py': b'__loader__.get_source(name)\n'}, 'src/cli.py names get_source'),
             'own file': ({STORE: STORE_DOCS + b'open(__file__)\n'}, 'src/auth/store.py names its own source file'),
+            'module file': ({'src/cli.py': b'from src.auth import store\nexec(Path(store.__file__).read_text())\n'},
+                            'src/cli.py reads __file__ of an object'),
+            'spec origin': ({'src/cli.py': b'import importlib.util\n'}, 'src/cli.py names importlib'),
+            'origin': ({'src/cli.py': b'open(spec.origin)\n'}, 'src/cli.py reads origin of an object'),
+            'getattr file': ({'src/cli.py': b'open(getattr(store, "__file__"))\n'}, 'src/cli.py names __file__ in a string'),
+            'shell origin': ({'bin/run.sh': b'python -c "import auth.store as s; print(s.__file__)"\n'},
+                             'bin/run.sh names a docstring reader'),
             'file path': ({'src/cli.py': b'Path("src/auth/store.py").read_text()\n'}, 'src/cli.py names the file src/auth/store.py'),
             'click': ({'src/cli.py': b'import click.testing\n'}, 'src/cli.py names click'),
             'from click': ({'src/cli.py': b'from click import command\n'}, 'src/cli.py names click'),
