@@ -878,7 +878,8 @@ def doc_reader(path, data, changed, files):
     # The gate cannot read a compressed file. Python runs a zip file, also after a #! line, for example a .pyz app.
     if ZIP.search(data) or data.startswith(COMPRESSED):
         return 'is an archive or a compressed file'
-    python = path.endswith(('.py', '.pyw')) or PYTHON.match(data)
+    # A .py file with a #! line of another program, for example #!/bin/sh, is not only Python.
+    python = (path.endswith(('.py', '.pyw')) and not data.startswith(b'#!')) or PYTHON.match(data)
     try:
         tree = ast.parse(data)
     except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
@@ -979,6 +980,10 @@ def docstring_check(gh, pr, listed, files):
         # The contents API reads the target of a link, so a listed link can change its target with no byte change.
         if mode not in ('100644', '100755') or gh.mode(merge, path) != mode:
             return None, '%s changes its file mode, or it is not a regular file.' % show(path)
+        # A #! line of another program, for example #!/bin/sh, runs the docstring as shell code. A shell runs an
+        # executable file with no #! line. Thus the file must be Python when it runs.
+        if (after[1].startswith(b'#!') or mode == '100755') and not PYTHON.match(after[1]):
+            return None, '%s can run as a program that is not Python.' % show(path)
         try:
             same = code_tree(before[1]) == code_tree(after[1])
             text = text_without_docstrings(before[1]) == text_without_docstrings(after[1])

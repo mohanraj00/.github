@@ -656,6 +656,19 @@ class DocstringCheckTest(unittest.TestCase):
                 self.assertFalse(passed)
                 self.assertIn('Docstring check: src/auth/store.py changes its file mode, or it is not a regular file.', message)
 
+    def test_a_listed_file_that_runs_as_another_program_needs_a_review(self):
+        bare_old, bare_new = STORE_OLD.split(b'\n', 1)[1], STORE_DOCS.split(b'\n', 1)[1]
+        executable = {(TIP, STORE): '100755', (MERGE, STORE): '100755'}
+        cases = {'shell line': (b'#!/bin/sh\n' + bare_old, b'#!/bin/sh\n' + bare_new, {}),
+                 'executable with no line': (bare_old, bare_new, executable)}
+        for name, (old, new, modes) in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new, modes=modes)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: src/auth/store.py can run as a program that is not Python.', message)
+        passed, message, _ = self.run_check(modes=executable)
+        self.assertTrue(passed, message)
+
     def test_a_source_encoding_that_is_not_utf8_needs_a_review(self):
         for cookie in (b'# -*- coding: unicode_escape -*-\n', b'# -*- coding: latin-1 -*-\n'):
             with self.subTest(cookie=cookie):
@@ -778,6 +791,7 @@ class DocstringCheckTest(unittest.TestCase):
             'frame globals': ({'tools/run.py': b'import sys\nrun(sys._getframe(0).f_globals)\n'}, 'tools/run.py reads f_globals of an object'),
             'gc': ({'tools/run.py': b'import gc\n'}, 'tools/run.py names gc'),
             'shell globals': ({'bin/run.sh': b"python3 -c 'print(f.__globals__)'\n"}, 'bin/run.sh names a docstring reader'),
+            'shell py': ({'tools/run.py': b'#!/bin/sh\nx = "python3 -c print(s.__doc__)"\n'}, 'tools/run.py names a docstring reader in a string'),
             'shell origin': ({'bin/run.sh': b'python -c "import auth.store as s; print(s.__file__)"\n'},
                              'bin/run.sh names a docstring reader'),
             'file path': ({'src/cli.py': b'Path("src/auth/store.py").read_text()\n'}, 'src/cli.py names the file store.py'),
