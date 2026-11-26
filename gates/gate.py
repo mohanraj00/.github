@@ -113,7 +113,10 @@ DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourceli
              'wraps', 'update_wrapper', 'cached_property', '__setattr__', '__set__',
              # A debugger, a tracer or a report tool finds a module by its dotted name and prints its source lines.
              'trace', 'tracemalloc', 'pdb', 'bdb', 'ipdb', 'pudb', 'trepan', 'IPython', 'ultratb', 'rich',
-             'stackprinter', 'better_exceptions', 'pytest', 'coverage'}
+             'stackprinter', 'better_exceptions', 'pytest', 'coverage',
+             # The interpreter records the source file and line of the code that makes a coroutine, for example in
+             # cr_origin.
+             'set_coroutine_origin_tracking_depth', 'get_coroutine_origin_tracking_depth'}
 # The plain names of DOC_NAMES, with no leading or trailing underscore, for example dir. The rules also find such a name
 # with other underscores, for example __dir__.
 BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
@@ -124,7 +127,7 @@ BARE_NAMES = {x for x in DOC_NAMES if x == x.strip('_')}
 ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin', '__code__', 'co_consts', 'co_code', 'gi_code',
                 'cr_code', 'f_code', '__dict__', '__globals__', '__builtins__', 'f_globals', 'f_locals', 'f_builtins', 'f_back',
                 'gi_frame', 'cr_frame', 'ag_frame', 'tb_frame', '__closure__', 'cell_contents', 'co_filename',
-                '__traceback__', 'pathname', 'metaclass', '__class__'}
+                '__traceback__', 'pathname', 'metaclass', '__class__', 'cr_origin', 'ag_code', '_source_traceback'}
 # A script gets the path of its own source file from the command line, for example "open(sys.argv[0])", or from a
 # warning that it gives, for example "WarningMessage.filename". The names count only in a changed listed file, as a
 # bare __file__ does.
