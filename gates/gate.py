@@ -740,12 +740,34 @@ def code_tree(data):
     return ast.dump(tree)
 
 
+def docstring_starts(tree):
+    """Return the start (line, column) of each docstring in the tree."""
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                found.add((first.value.lineno, first.value.col_offset))
+    return found
+
+
 def tool_lines(data):
-    """Return the lines that a tool can read outside of the tree: the start line #!, and each comment that controls a tool."""
+    """Return the lines that a tool can read outside of the tree. The first item is the start line #!. Then each line
+    with code gives its code tokens and the comments on it that control a tool, in order. A line with only such a
+    comment is an item too. Thus a tool comment cannot move to other code, and a line break in the code cannot move."""
     first = data.split(b'\n', 1)[0]
-    found = [first] if first.startswith(b'#!') else []
-    tokens = tokenize.tokenize(io.BytesIO(data).readline)
-    return found + sorted(x.string for x in tokens if x.type == tokenize.COMMENT and DIRECTIVE.search(x.string))
+    docs = docstring_starts(ast.parse(data))
+    rows = {}
+    for token in tokenize.tokenize(io.BytesIO(data).readline):
+        if token.type in (tokenize.ENCODING, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER):
+            continue
+        # The ast column counts UTF-8 bytes. The token column counts characters.
+        if token.type == tokenize.STRING and (token.start[0], len(token.line[:token.start[1]].encode())) in docs:
+            continue
+        if token.type == tokenize.COMMENT and not DIRECTIVE.search(token.string):
+            continue
+        rows.setdefault(token.start[0], []).append((token.type, token.string))
+    return [first if first.startswith(b'#!') else b''] + [tuple(rows[x]) for x in sorted(rows)]
 
 
 def doc_reader(path, data, changed):
@@ -762,6 +784,8 @@ def doc_reader(path, data, changed):
             return 'reads __doc__ of an object'
         if isinstance(node, ast.Constant) and node.value == '__doc__':
             return 'names __doc__ in a string'
+        if isinstance(node, ast.ImportFrom) and any(x.name == '__doc__' for x in node.names):
+            return 'imports __doc__ of a module'
         if isinstance(node, ast.Name) and node.id == '__doc__' and changed:
             return 'reads its own __doc__'
         names = ([node.id] if isinstance(node, ast.Name) else [node.attr] if isinstance(node, ast.Attribute)
@@ -797,7 +821,7 @@ def docstring_check(gh, pr, listed, files):
         if not same:
             return None, '%s changes code, not only comments and docstrings.' % show(path)
         if not tools:
-            return None, '%s changes the #! line or a comment that controls a tool.' % show(path)
+            return None, '%s changes the #! line, a comment that controls a tool, or the line breaks of the code.' % show(path)
         proved.append('%s: only comments and docstrings change.' % show(path))
     if not proved:
         return None, 'No listed path changed.'

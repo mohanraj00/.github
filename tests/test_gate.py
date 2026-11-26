@@ -589,6 +589,22 @@ class DocstringCheckTest(unittest.TestCase):
         passed, message, _ = self.run_check(new=new)
         self.assertTrue(passed, message)
 
+    def test_a_docstring_after_code_on_its_line_passes(self):
+        old = 'def f(x="é"): "Doc."\n'.encode()
+        passed, message, _ = self.run_check(old=old, new=old.replace(b'Doc.', b'Doc two.'))
+        self.assertTrue(passed, message)
+
+    def test_a_moved_tool_comment_or_line_break_needs_a_review(self):
+        old = b'run(a)  # nosec\nrun(b)\n# fmt: off\nx = [1]\ny = f(a, b)\n'
+        cases = {'moved comment': old.replace(b'run(a)  # nosec\nrun(b)', b'run(a)\nrun(b)  # nosec'),
+                 'moved line': old.replace(b'# fmt: off\nx = [1]', b'x = [1]\n# fmt: off'),
+                 'new line break': old.replace(b'f(a, b)', b'f(a,\n      b)')}
+        for name, new in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py changes the #! line, a comment that controls a tool, or the line breaks', message)
+
     def test_an_added_or_removed_docstring_passes(self):
         new = STORE_OLD.replace(b'        """Return the rows."""\n', b'').replace(b'class Store:\n', b'class Store:\n    """New."""\n', 1)
         passed, message, _ = self.run_check(new=new.replace(b'    """The rows."""\n', b''))
@@ -620,7 +636,7 @@ class DocstringCheckTest(unittest.TestCase):
             with self.subTest(name):
                 passed, message, _ = self.run_check(new=new)
                 self.assertFalse(passed)
-                self.assertIn('src/auth/store.py changes the #! line or a comment that controls a tool.', message)
+                self.assertIn('src/auth/store.py changes the #! line, a comment that controls a tool, or the line breaks of the code.', message)
 
     def test_a_parse_error_needs_a_review(self):
         for old, new in ((STORE_OLD, STORE_DOCS + b'def (\n'), (STORE_OLD + b'\x00', STORE_DOCS), (STORE_OLD, b'\tx\n  y\n')):
@@ -661,6 +677,7 @@ class DocstringCheckTest(unittest.TestCase):
             'object __doc__': ({'src/cli.py': b'from src.auth import store\nprint(store.Store.rows.__doc__)\n'},
                                'src/cli.py reads __doc__ of an object'),
             'getattr': ({'src/cli.py': b'getattr(x, "__doc__")\n'}, 'src/cli.py names __doc__ in a string'),
+            'import': ({'src/cli.py': b'from src.auth.store import __doc__ as text\n'}, 'src/cli.py imports __doc__ of a module'),
             'inspect': ({'src/cli.py': b'from inspect import getdoc\n'}, 'src/cli.py names getdoc'),
             'source': ({'src/cli.py': b'import inspect\ninspect.getsource(f)\n'}, 'src/cli.py names getsource'),
             'click': ({'src/cli.py': b'import click.testing\n'}, 'src/cli.py names click'),
