@@ -8,6 +8,7 @@ It uses the standard library only, and it calls no host other than the GitHub AP
 import argparse
 import ast
 import base64
+import codecs
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 import hashlib
@@ -869,12 +870,26 @@ def doc_reader(path, data, changed, files):
             return reason
     if python:
         return None
-    if DOC_WORDS.search(data):
+    texts = text_forms(data)
+    if any(DOC_WORDS.search(x) for x in texts):
         return 'names a docstring reader'
     if path in PATH_DATA:
         return None
-    name = next((x for x in sorted(files) if x.encode() in data), None)
+    name = next((x for x in sorted(files) if any(x.encode() in y for y in texts)), None)
     return 'names the file %s' % show(name) if name else None
+
+
+def text_forms(data):
+    """Return the forms of the file for the word rules, in UTF-8. A UTF-16 or UTF-32 script, for example a PowerShell
+    script, has a NUL byte between its characters. Thus the forms are the bytes, the bytes with no NUL byte, and the
+    text that a BOM gives."""
+    forms = [data, data.replace(b'\0', b'')]
+    for bom, encoding in ((codecs.BOM_UTF32_LE, 'utf-32'), (codecs.BOM_UTF32_BE, 'utf-32'), (codecs.BOM_UTF16_LE, 'utf-16'),
+                          (codecs.BOM_UTF16_BE, 'utf-16')):
+        if data.startswith(bom):
+            forms.append(data.decode(encoding, 'replace').encode('utf-8', 'replace'))
+            break
+    return forms
 
 
 def python_reader(tree, changed, files):
@@ -927,7 +942,7 @@ def docstring_check(gh, pr, listed, files):
     if not re.fullmatch(r'[0-9a-f]{40}', merge) or gh.parents(merge) != [base, head]:
         return None, 'GitHub has no test merge commit of the base %s and the head %s.' % (base[:12], head[:12])
     status = {x['path']: x for x in files}
-    proved = []
+    proved, merged = [], {}
     for path in listed:
         item = status.get(path)
         if not path.endswith('.py'):
@@ -953,10 +968,16 @@ def docstring_check(gh, pr, listed, files):
         if not text:
             return None, '%s changes a byte outside the docstrings, or adds or removes a docstring.' % show(path)
         proved.append('%s: only the text of docstrings changes.' % show(path))
+        merged[path] = after[1]
     if not proved:
         return None, 'No listed path changed.'
     basenames = {posixpath.basename(x) for x in listed}
     for path, data in sorted(gh.tree_files(merge).items()):
+        # The tarball gives a link the bytes of its target. A link or a copy of a listed file is a second name for it,
+        # for example "sh payload" for "payload -> src/auth/store.py".
+        alias = next((x for x in sorted(merged) if x != path and merged[x] == data), None)
+        if alias:
+            return None, '%s has the bytes of %s, so a docstring can be code.' % (show(path), show(alias))
         reason = doc_reader(path, data, path in listed, basenames)
         if reason:
             return None, '%s %s, so a docstring can be code.' % (show(path), reason)

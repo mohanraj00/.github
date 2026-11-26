@@ -758,6 +758,21 @@ class DocstringCheckTest(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn('tools/run.py names the file \\u00e9.py', message)
 
+    def test_a_link_or_a_copy_of_a_listed_file_needs_a_review(self):
+        passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'payload': STORE_DOCS})
+        self.assertFalse(passed)
+        self.assertIn('Docstring check: payload has the bytes of src/auth/store.py, so a docstring can be code.', message)
+
+    def test_a_utf16_reader_needs_a_review(self):
+        script = 'python -c "from src.auth import store; exec(store.__doc__)"\r\n'
+        cases = {'bom': script.encode('utf-16'), 'no bom': script.encode('utf-16-le'),
+                 'path': '& sh src/auth/store.py\r\n'.encode('utf-16')}
+        for name, data in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(tree={STORE: STORE_DOCS, 'tools/run.ps1': data})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: tools/run.ps1 names', message)
+
     def test_a_reader_of_its_own_docstring_in_an_unchanged_file_is_valid(self):
         tree = {STORE: STORE_DOCS, 'tools/claude_review.py': b'"""Help."""\nimport argparse\nargparse.ArgumentParser(description=__doc__)\n',
                 'tests/conftest.py': b'from pathlib import Path\nROOT = Path(__file__).parent\n',
