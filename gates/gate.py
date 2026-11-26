@@ -68,19 +68,23 @@ TARBALL_BYTES = 64 * 1024 * 1024
 TREE_BYTES = 256 * 1024 * 1024
 TREE_FILES = 20000
 # A docstring is code if a file of the head tree reads it. A Python file that names one of these reads docstrings or
-# source files, runs text as code, or makes the help text of a command or a grammar from the docstrings. The names are
+# source files, runs text as code, makes the help text of a command or a grammar from the docstrings, or publishes them
+# as docs. The names are
 # modules and functions, so a new function of the module "inspect" or "ast" also counts.
 DOC_NAMES = {'getdoc', 'get_docstring', 'getcomments', 'getsource', 'getsourcelines', 'findsource', 'getsourcefile', 'getfile',
              'getabsfile', 'getmodule', 'get_source', 'get_data', '__loader__', 'linecache', 'pydoc', 'doctest', 'click',
              'typer', 'fire', 'docopt', 'ply', 'find_spec', 'get_filename', 'importlib', 'pkgutil', 'inspect', 'ast',
-             'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__'}
+             'tokenize', 'runpy', 'zipimport', 'exec', 'eval', 'compile', '__import__', 'sphinx', 'pdoc', 'mkdocstrings',
+             'griffe'}
 # These attributes give the source file of a module, for example "store.__file__" or "find_spec(name).origin". An
 # attribute or a string with one of these names counts in each file.
 ORIGIN_NAMES = {'__file__', '__spec__', '__cached__', '__path__', 'origin'}
 # In a file that is not Python and not a doc, these words can read a docstring or a source file, for example
 # "pytest --doctest-modules".
 DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
-                       rb'|doctest|__file__|__spec__|find_spec|importlib|pkgutil|inspect|runpy')
+                       rb'|doctest|__file__|__spec__|find_spec|importlib|pkgutil|inspect|runpy'
+                       # A docs generator publishes the docstrings, for example Sphinx autodoc or mkdocstrings.
+                       rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe')
 # A file with one of these extensions, or with a #! line that names python, is Python.
 PYTHON = re.compile(rb'#![^\n]*python')
 # Python and a shell run a file with each name, so the gate reads each doc and each config.
