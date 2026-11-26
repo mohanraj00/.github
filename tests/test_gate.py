@@ -626,10 +626,12 @@ class DocstringCheckTest(unittest.TestCase):
                  'continuation': (b'def f():\n    "Doc." \\\n    ; fail()\n', line),
                  'class': (b'class Store(Base):\n    """Doc."""\n    rows = 1\n',
                            'changes the docstring of the class Store, and a traceback of the class statement prints it.'),
-                 'lone cr': (b'def f():\n    "Doc."\r    return 1\n', 'has a line break \\r with no \\n.')}
+                 'lone cr': (b'def f():\n    "Doc."\r    return 1\n', 'has a line break \\r with no \\n.'),
+                 'escape warning': (b'def f():\n    "Doc."\n', 'gives a compile warning (SyntaxWarning), and Python prints its source line.')}
         for name, (old, expected) in cases.items():
             with self.subTest(name):
-                passed, message, _ = self.run_check(old=old, new=old.replace(b'Doc.', b'Doc two.'))
+                new = old.replace(b'Doc.', b'Doc \\q.' if name == 'escape warning' else b'Doc two.')
+                passed, message, _ = self.run_check(old=old, new=new)
                 self.assertFalse(passed)
                 self.assertIn('src/auth/store.py ' + expected, message)
 

@@ -26,6 +26,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from claude_review import FAILED, MARKER as CLAUDE_MARKER, REQUESTS as CLAUDE_REQUESTS, request_kind as claude_request_kind  # noqa: E402
@@ -936,14 +937,25 @@ LINE_END = re.compile(rb'[ \t\f]*(?:#[^\r\n]*)?\r?')
 
 
 def traceback_reason(before, after):
-    """Return the reason if a changed docstring can show in a traceback, else None. A traceback prints the source lines
-    of the instruction that fails. The instruction that makes a class has the lines of all of the class statement, for
-    example when __init_subclass__ fails. Another instruction can share a line with a docstring, for example
-    'def run(): "Run."; fail()'. Thus a changed docstring cannot be the docstring of a class, and its lines
-    can have no other code."""
+    """Return the reason if a changed docstring can show in a traceback or a warning, else None. A traceback prints
+    the lines of the instruction that fails. The instruction that makes a class has the lines of all of the class
+    statement, for example when __init_subclass__ fails. Another instruction can share a line with a docstring, for
+    example 'def run(): "Run."; fail()'. Thus a changed docstring cannot be the docstring of a class, and its lines
+    can have no other code. A compile warning also prints its source line, so the head can give no warning."""
     old, new = docstring_nodes(ast.parse(before)), docstring_nodes(ast.parse(after))
     if len(old) != len(new):
         return 'adds or removes a docstring'
+    # Python prints the source line of a compile warning, for example of an invalid escape such as \\q in a docstring.
+    with warnings.catch_warnings(record=True) as found:
+        warnings.simplefilter('always')
+        try:
+            compile(after, '<listed file>', 'exec', dont_inherit=True)
+        except (SyntaxError, ValueError, RecursionError, MemoryError) as error:
+            return 'does not compile at the head (%s)' % type(error).__name__
+    # Only a warning of the compile counts. Other code can give a warning at the same time, for example a ResourceWarning.
+    found = [x for x in found if x.filename == '<listed file>']
+    if found:
+        return 'gives a compile warning (%s), and Python prints its source line' % found[0].category.__name__
     # The ast rows count a line break \r as one line, and the split below does not.
     if re.search(rb'\r(?!\n)', after):
         return 'has a line break \\r with no \\n'
