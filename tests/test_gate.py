@@ -613,9 +613,15 @@ class DocstringCheckTest(unittest.TestCase):
         cases = {'moved comment': old.replace(b'run(a)  # nosec\nrun(b)', b'run(a)\nrun(b)  # nosec'),
                  'moved line': old.replace(b'# fmt: off\nx = [1]', b'x = [1]\n# fmt: off'),
                  'new line break': old.replace(b'f(a, b)', b'f(a,\n      b)')}
-        for name, new in cases.items():
+        semgrep = b'def f(command):\n    # nosemgrep\n    \"\"\"Run.\"\"\"\n    return run(command, shell=True)  # nosec\n\n    \n'
+        cases |= {'removed docstring': (semgrep, semgrep.replace(b'    \"\"\"Run.\"\"\"\n', b'')),
+                  'removed blank line': (b'# nosemgrep\n\nrun(command)\n', b'# nosemgrep\nrun(command)\n'),
+                  'changed next line': (semgrep, semgrep.replace(b'Run.', b'Run it.')),
+                  'line after a code tool comment': (semgrep, semgrep.replace(b'  # nosec\n\n', b'  # nosec\n'))}
+        cases = {name: value if isinstance(value, tuple) else (old, value) for name, value in cases.items()}
+        for name, (before, new) in cases.items():
             with self.subTest(name):
-                passed, message, _ = self.run_check(old=old, new=new)
+                passed, message, _ = self.run_check(old=before, new=new)
                 self.assertFalse(passed)
                 self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment, or the line breaks', message)
 

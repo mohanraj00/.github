@@ -774,7 +774,8 @@ def docstring_starts(tree):
 def tool_lines(data):
     """Return the lines that a tool can read outside of the tree. The first item is the start line #!. Then each line
     with code gives its code tokens and its comment, in order. A line with only a comment that names a tool is an item
-    too. Thus a comment on code cannot change or move, a tool comment cannot move, and a line break in the code cannot move."""
+    too. A line with a tool comment also gives the next line. Thus a comment on code cannot change or move, a tool
+    comment cannot move, and a line break in the code cannot move."""
     first = data.split(b'\n', 1)[0]
     docs = docstring_starts(ast.parse(data))
     rows = {}
@@ -785,11 +786,14 @@ def tool_lines(data):
         if token.type == tokenize.STRING and (token.start[0], len(token.line[:token.start[1]].encode())) in docs:
             continue
         rows.setdefault(token.start[0], []).append((token.type, token.string))
-    found = []
+    # A tool comment can apply to the next line, as "# nosemgrep" does. Thus a line with a tool comment also gives the
+    # exact next line, so a removed docstring or blank line cannot move the comment to other code.
+    lines, found = data.split(b'\n'), []
     for row in sorted(rows):
         tokens = rows[row]
-        if any(kind != tokenize.COMMENT for kind, _ in tokens) or DIRECTIVE.search(tokens[0][1]):
-            found.append(tuple(tokens))
+        tool = any(kind == tokenize.COMMENT and DIRECTIVE.search(text) for kind, text in tokens)
+        if tool or any(kind != tokenize.COMMENT for kind, _ in tokens):
+            found.append(tuple(tokens) + ((lines[row] if row < len(lines) else b''),) * tool)
     return [first if first.startswith(b'#!') else b''] + found
 
 
