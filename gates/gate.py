@@ -114,6 +114,9 @@ DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get
 # The signatures of a zip file, at any place, and of other compressed files, at the start.
 ZIP = re.compile(rb'PK\x03\x04|PK\x05\x06|PK\x06\x06')
 COMPRESSED = (b'\x1f\x8b', b'BZh', b'\xfd7zXZ\x00', b'\x28\xb5\x2f\xfd', b"7z\xbc\xaf\x27\x1c")
+# A .gitattributes file with one of these attributes changes the bytes that a checkout writes. A .lfsconfig file sets
+# the LFS store.
+CHECKOUT = re.compile(rb'filter|working-tree-encoding|ident|lfs', re.IGNORECASE)
 # A file with one of these extensions, or with a #! line of Python, is Python. The #! line must run Python directly: a
 # path to python, or /usr/bin/env and python, and one optional group of flags with no argument. A line such as
 # '#!/usr/bin/env -S sh -c ... python' names python, but it runs a shell, so it does not match.
@@ -897,6 +900,12 @@ def doc_reader(path, data, changed, files):
     # The gate cannot read a compressed file. Python runs a zip file, also after a #! line, for example a .pyz app.
     if ZIP.search(data) or data.startswith(COMPRESSED):
         return 'is an archive or a compressed file'
+    # A checkout can write other bytes than the blob. A Git LFS pointer gets the object of the LFS store, and a filter,
+    # a working-tree-encoding or an ident attribute changes the bytes. The gate reads only the blob.
+    if data.startswith(b'version https://git-lfs.github.com/spec/'):
+        return 'is a Git LFS pointer'
+    if posixpath.basename(path) in ('.gitattributes', '.lfsconfig') and CHECKOUT.search(data):
+        return 'changes the bytes of a checkout'
     # A .py file with a #! line of another program, for example #!/bin/sh, is not only Python.
     python = (path.endswith(('.py', '.pyw')) and not data.startswith(b'#!')) or PYTHON.match(data)
     try:
