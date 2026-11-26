@@ -149,6 +149,9 @@ SELF_NAMES = {'argv', 'orig_argv', 'filename', 'warnings'}
 # each case.
 DOC_WORDS = re.compile(rb'__doc__|getdoc|get_docstring|getcomments|getsource|get_source|findsource|getabsfile|linecache|pydoc'
                        rb'|doctest|__file__|__spec__|__code__|co_consts|find_spec|importlib|pkgutil|inspect|runpy'
+                       # A stack dump gives the source file of each frame, also in a compound name such as
+                       # faulthandler.dump_traceback or format_traceback.
+                       rb'|traceback|faulthandler|dump_c_stack'
                        # A docs generator publishes the docstrings, for example Sphinx autodoc or mkdocstrings.
                        rb'|sphinx|autodoc|automodule|autoclass|autofunction|automethod|autosummary|pdoc|mkdocstrings|griffe'
                        # A shell can run Python, for example python3 -c "vars(store)". Thus each name of the Python
