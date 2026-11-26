@@ -585,9 +585,23 @@ class DocstringCheckTest(unittest.TestCase):
         self.assertEqual(output, {'summary': 'Security review: not needed. Only comments and docstrings changed in a listed path.'})
 
     def test_a_comment_only_change_passes_with_no_review(self):
-        new = STORE_OLD.replace(b'class Store:', b'# The store of the rows.\nclass Store:  # One class.')
+        new = STORE_OLD.replace(b'class Store:', b'# The store of the rows. It is not open now.\n\n# One class.\nclass Store:')
         passed, message, _ = self.run_check(new=new)
         self.assertTrue(passed, message)
+
+    def test_a_comment_on_code_or_a_tool_comment_needs_a_review(self):
+        old = b'import subprocess\n# The command.\nsubprocess.run(command, shell=True)  # Run it.\n'
+        cases = {'comment on code': old.replace(b'# Run it.', b'# Run the command.'),
+                 'nosemgrep on code': old.replace(b'# Run it.', b'# Run it. nosemgrep'),
+                 'nosemgrep line': old.replace(b'# The command.', b'# nosemgrep: python.lang.security'),
+                 'tool with a colon': old.replace(b'# The command.', b'# pylint: disable-next=all'),
+                 'tool with a bracket': old.replace(b'# The command.', b'# lgtm[py/command-line-injection]'),
+                 'unknown tool word': old.replace(b'# The command.', b'# NOSONAR')}
+        for name, new in cases.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new)
+                self.assertFalse(passed)
+                self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment', message)
 
     def test_a_docstring_after_code_on_its_line_passes(self):
         old = 'def f(x="é"): "Doc."\n'.encode()
@@ -603,7 +617,7 @@ class DocstringCheckTest(unittest.TestCase):
             with self.subTest(name):
                 passed, message, _ = self.run_check(old=old, new=new)
                 self.assertFalse(passed)
-                self.assertIn('src/auth/store.py changes the #! line, a comment that controls a tool, or the line breaks', message)
+                self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment, or the line breaks', message)
 
     def test_an_added_or_removed_docstring_passes(self):
         new = STORE_OLD.replace(b'        """Return the rows."""\n', b'').replace(b'class Store:\n', b'class Store:\n    """New."""\n', 1)
@@ -636,7 +650,7 @@ class DocstringCheckTest(unittest.TestCase):
             with self.subTest(name):
                 passed, message, _ = self.run_check(new=new)
                 self.assertFalse(passed)
-                self.assertIn('src/auth/store.py changes the #! line, a comment that controls a tool, or the line breaks of the code.', message)
+                self.assertIn('src/auth/store.py changes the #! line, a comment on code, a tool comment, or the line breaks of the code.', message)
 
     def test_a_parse_error_needs_a_review(self):
         for old, new in ((STORE_OLD, STORE_DOCS + b'def (\n'), (STORE_OLD + b'\x00', STORE_DOCS), (STORE_OLD, b'\tx\n  y\n')):

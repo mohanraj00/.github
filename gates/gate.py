@@ -73,8 +73,12 @@ DOC_NAMES = {'getdoc', 'getcomments', 'getsource', 'getsourcelines', 'findsource
 # In a file that is not Python and not a doc, these words can read a docstring, for example "pytest --doctest-modules".
 DOC_WORDS = re.compile(rb'__doc__|getdoc|pydoc|doctest')
 DOC_TEXT = ('.md', '.rst', '.txt')
-# A comment with one of these words controls a tool, for example "# nosec" or "# type: ignore". It is not only text.
-DIRECTIVE = re.compile(r'(?i)\b(?:nosec|noqa|pragma|type:|pylint:|mypy:|pyright:|ruff:|fmt:|isort:|coverage:)')
+# A comment on a line with code must not change, because a tool can read each such comment, for example "# nosec".
+# A comment on its own line can change only if it does not name a tool. These words name the usual tools. A word and a
+# colon, as in "pylint: disable" or "type: ignore", or a word and a bracket, as in "lgtm[py/x]", also names a tool.
+DIRECTIVE = re.compile(r'(?i)\b(?:no[a-z]*(?:qa|sec|semgrep|sonar|lint|cover|check|inspection)|skipcq|lgtm|codeql|pragma|pyre-?[a-z]*|'
+                       r'pytype|fmt|isort|type|mypy|pylint|pyright|ruff|flake8|coverage|bandit|semgrep|bearer|snyk|ignore)\b'
+                       r'|\w\s*:\s*\S|\w\[')
 PIN = re.compile(rb'(mohanraj00/\.github/gates@)([0-9a-f]{40})(?![0-9A-Za-z])')
 # The pr-policy form is the record of the aavanam and entelos gates before this action.
 RECORD = re.compile(r'<!-- (?:gates|pr-policy):approval label=(\S+) head=([0-9a-f]{40}) base=(\S+) -->')
@@ -753,8 +757,8 @@ def docstring_starts(tree):
 
 def tool_lines(data):
     """Return the lines that a tool can read outside of the tree. The first item is the start line #!. Then each line
-    with code gives its code tokens and the comments on it that control a tool, in order. A line with only such a
-    comment is an item too. Thus a tool comment cannot move to other code, and a line break in the code cannot move."""
+    with code gives its code tokens and its comment, in order. A line with only a comment that names a tool is an item
+    too. Thus a comment on code cannot change or move, a tool comment cannot move, and a line break in the code cannot move."""
     first = data.split(b'\n', 1)[0]
     docs = docstring_starts(ast.parse(data))
     rows = {}
@@ -764,10 +768,13 @@ def tool_lines(data):
         # The ast column counts UTF-8 bytes. The token column counts characters.
         if token.type == tokenize.STRING and (token.start[0], len(token.line[:token.start[1]].encode())) in docs:
             continue
-        if token.type == tokenize.COMMENT and not DIRECTIVE.search(token.string):
-            continue
         rows.setdefault(token.start[0], []).append((token.type, token.string))
-    return [first if first.startswith(b'#!') else b''] + [tuple(rows[x]) for x in sorted(rows)]
+    found = []
+    for row in sorted(rows):
+        tokens = rows[row]
+        if any(kind != tokenize.COMMENT for kind, _ in tokens) or DIRECTIVE.search(tokens[0][1]):
+            found.append(tuple(tokens))
+    return [first if first.startswith(b'#!') else b''] + found
 
 
 def doc_reader(path, data, changed):
@@ -821,7 +828,7 @@ def docstring_check(gh, pr, listed, files):
         if not same:
             return None, '%s changes code, not only comments and docstrings.' % show(path)
         if not tools:
-            return None, '%s changes the #! line, a comment that controls a tool, or the line breaks of the code.' % show(path)
+            return None, '%s changes the #! line, a comment on code, a tool comment, or the line breaks of the code.' % show(path)
         proved.append('%s: only comments and docstrings change.' % show(path))
     if not proved:
         return None, 'No listed path changed.'
