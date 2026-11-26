@@ -348,6 +348,11 @@ class GitHub:
         data = self.call('GET', '/repos/%s/compare/%s...main' % (repo, commit))
         return data.get('status') in ('ahead', 'identical')
 
+    def parents(self, commit):
+        """Return the parent SHAs of the commit, in order."""
+        data = self.call('GET', '/repos/%s/commits/%s' % (self.repo, commit))
+        return [x.get('sha') for x in (data or {}).get('parents') or []]
+
     def tree_files(self, ref):
         """Return {path: bytes} for each file of the tree at the commit. The tarball of the commit gives all files in one call."""
         request = urllib.request.Request(API + '/repos/%s/tarball/%s' % (self.repo, ref), headers={
@@ -837,9 +842,12 @@ def doc_reader(path, data, changed, files):
 
 def docstring_check(gh, pr, listed, files):
     """Return (proved lines, None) if each listed path is a .py file that changes only the text of its docstrings, else
-    (None, reason). The file keeps its path. The tree of the base and the head are equal after the docstrings go.
-    No file of the head tree reads a docstring."""
-    head, base = pr['head']['sha'], pr['base']['sha']
+    (None, reason). The file keeps its path. The tree of the base and the merge are equal after the docstrings go.
+    No file of the merge tree reads a docstring. The merge is the test merge commit of GitHub, with the parents base
+    and head, so the check also reads the files that the base branch has and the head does not have."""
+    head, base, merge = pr['head']['sha'], pr['base']['sha'], pr.get('merge_commit_sha') or ''
+    if not re.fullmatch(r'[0-9a-f]{40}', merge) or gh.parents(merge) != [base, head]:
+        return None, 'GitHub has no test merge commit of the base %s and the head %s.' % (base[:12], head[:12])
     status = {x['path']: x for x in files}
     proved = []
     for path in listed:
@@ -848,7 +856,7 @@ def docstring_check(gh, pr, listed, files):
             return None, '%s is not a .py file.' % show(path)
         if not item or item.get('status') != 'modified' or item.get('previous'):
             return None, '%s is not a modified file with the same path.' % show(path)
-        before, after = gh.content(gh.repo, path, base), gh.content(gh.repo, path, head)
+        before, after = gh.content(gh.repo, path, base), gh.content(gh.repo, path, merge)
         if not before or not after:
             return None, 'Cannot read %s at the base or the head.' % show(path)
         try:
@@ -864,7 +872,7 @@ def docstring_check(gh, pr, listed, files):
     if not proved:
         return None, 'No listed path changed.'
     basenames = {posixpath.basename(x) for x in listed}
-    for path, data in sorted(gh.tree_files(head).items()):
+    for path, data in sorted(gh.tree_files(merge).items()):
         reason = doc_reader(path, data, path in listed, basenames)
         if reason:
             return None, '%s %s, so a docstring can be code.' % (show(path), reason)

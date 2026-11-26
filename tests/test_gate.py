@@ -22,6 +22,7 @@ OLD = 'b' * 40
 BASE = 'c' * 40
 # The tip of the base branch, and two SHAs of the gates action.
 TIP = 'f' * 40
+MERGE = '9' * 40
 PIN_OLD, PIN_NEW = 'd' * 40, 'e' * 40
 TEMPLATE = (ROOT / '.github/pull_request_template.md').read_text()
 FILLED = 'Closes #5\n\n## Testing\n\n`make check`: 10 tests pass.\n\n## Risk\n\nLow. Level 0.\n\n## How to revert\n\nRevert the commit.\n'
@@ -70,7 +71,7 @@ class Fake:
         self.slept = 0
         self.state = {'labels': [{'name': x} for x in labels], 'body': body, 'user': {'login': author},
                       'head': {'sha': head, 'ref': ref, 'repo': {'full_name': 'someone/project' if fork else REPO}},
-                      'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}}
+                      'base': {'ref': 'main', 'sha': TIP, 'repo': {'default_branch': 'main'}}, 'merge_commit_sha': MERGE}
         self.contents = contents or {}
         self.mains = set(on_main)
         self.tree = {}
@@ -147,7 +148,8 @@ class Fake:
         return self.current_base
 
     def content(self, repo, path, ref):
-        data = self.contents.get((repo, path, ref))
+        # The test merge has the files of the head in these tests.
+        data = self.contents.get((repo, path, HEAD if ref == MERGE else ref))
         if isinstance(data, Exception):
             raise data
         return (gate.blob_sha(data), data) if data is not None else None
@@ -155,7 +157,11 @@ class Fake:
     def on_main(self, repo, commit):
         return repo == gate.UPSTREAM and commit in self.mains
 
+    def parents(self, commit):
+        return [TIP, HEAD] if commit == MERGE else []
+
     def tree_files(self, ref):
+        self.tree_ref = ref
         if isinstance(self.tree, Exception):
             raise self.tree
         return self.tree
@@ -699,6 +705,25 @@ class DocstringCheckTest(unittest.TestCase):
                 self.assertFalse(passed)
                 self.assertIn('The docstring check failed closed (%s' % type(error).__name__, message)
 
+    def test_the_check_reads_the_test_merge_commit(self):
+        contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+        fake = Fake(files=[STORE], contents=contents)
+        fake.tree = {STORE: STORE_DOCS, 'src/base_only.py': b'from src.auth.store import __doc__\n'}
+        passed, message, _ = check('security-review', fake)
+        self.assertFalse(passed)
+        self.assertEqual(fake.tree_ref, MERGE)
+        self.assertIn('src/base_only.py imports __doc__ of a module', message)
+
+    def test_a_missing_or_stale_test_merge_needs_a_review(self):
+        for merge in (None, '', 'abc', OLD):
+            with self.subTest(merge=merge):
+                contents = {(REPO, STORE, TIP): STORE_OLD, (REPO, STORE, HEAD): STORE_DOCS}
+                fake = Fake(files=[STORE], contents=contents)
+                fake.state['merge_commit_sha'] = merge
+                passed, message, _ = check('security-review', fake)
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: GitHub has no test merge commit of the base ffffffffffff and the head aaaaaaaaaaaa.', message)
+
     def test_security_needed_skips_the_docstring_check(self):
         passed, message, _ = self.run_check(labels=['security-needed'])
         self.assertFalse(passed)
@@ -800,6 +825,11 @@ class TreeFilesTest(unittest.TestCase):
         for name, (tree, expected) in cases.items():
             with self.subTest(name), self.assertRaisesRegex(gate.GateError, expected):
                 self.read(data, tree)
+
+    def test_parents_reads_the_commit(self):
+        with mock.patch.object(gate.GitHub, 'call', return_value={'parents': [{'sha': TIP}, {'sha': HEAD}]}) as call:
+            self.assertEqual(gate.GitHub(REPO, 7, 'token').parents(MERGE), [TIP, HEAD])
+        call.assert_called_once_with('GET', '/repos/owner/project/commits/' + MERGE)
 
     def test_a_large_tree_fails_closed(self):
         cases = {'TARBALL_BYTES': 'larger than 10 bytes', 'TREE_BYTES': 'larger than 10 bytes', 'TREE_FILES': 'more than 2 files'}
