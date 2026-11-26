@@ -1025,6 +1025,17 @@ class DocstringCheckTest(unittest.TestCase):
         self.assertFalse(passed)
         self.assertIn('Docstring check: payload has the bytes of src/auth/store.py, so a docstring can be code.', message)
 
+    def test_a_copy_with_other_line_breaks_needs_a_review(self):
+        # A checkout with core.autocrlf writes both files with \r\n.
+        # A #! line with \r\n does not run Python, so these files have no #! line.
+        lf = (STORE_OLD.split(b'\n', 1)[1], STORE_DOCS.split(b'\n', 1)[1])
+        crlf = (lf[0].replace(b'\n', b'\r\n'), lf[1].replace(b'\n', b'\r\n'))
+        for name, (old, new, copy) in {'crlf file': crlf + (lf[1],), 'crlf copy': lf + (crlf[1],)}.items():
+            with self.subTest(name):
+                passed, message, _ = self.run_check(old=old, new=new, tree={STORE: new, 'payload': copy})
+                self.assertFalse(passed)
+                self.assertIn('Docstring check: payload has the bytes of src/auth/store.py', message)
+
     def test_a_utf16_reader_needs_a_review(self):
         script = 'python -c "from src.auth import store; exec(store.__doc__)"\r\n'
         cases = {'bom': script.encode('utf-16'), 'no bom': script.encode('utf-16-le'),

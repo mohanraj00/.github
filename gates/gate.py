@@ -1309,6 +1309,11 @@ def decode_codec(node):
     return None
 
 
+def line_form(data):
+    """Return the bytes with each line break \\r\\n as \\n."""
+    return data.replace(b'\r\n', b'\n')
+
+
 def docstring_check(gh, pr, listed, files):
     """Return (proved lines, None) if each listed path is a .py file that changes only the text of its docstrings, else
     (None, reason). The file keeps its path. The tree of the base and the merge are equal after the docstrings go.
@@ -1358,7 +1363,9 @@ def docstring_check(gh, pr, listed, files):
     for path, data in sorted(gh.tree_files(merge).items()):
         # The tarball gives a link the bytes of its target. A link or a copy of a listed file is a second name for it,
         # for example "sh payload" for "payload -> src/auth/store.py".
-        alias = next((x for x in sorted(merged) if x != path and merged[x] == data), None)
+        # A checkout can change the line breaks with no attribute, for example by core.autocrlf, so the bytes are
+        # compared with each \r\n as \n.
+        alias = next((x for x in sorted(merged) if x != path and line_form(merged[x]) == line_form(data)), None)
         if alias:
             return None, '%s has the bytes of %s, so a docstring can be code.' % (show(path), show(alias))
         reason = doc_reader(path, data, path in listed, basenames)
