@@ -146,6 +146,24 @@ GitHub expressions have no regular expressions. Thus the Claude workflow starts 
 
 If the agy login is not in the token file, for example in the macOS keychain, `gates/cross_review.py` cannot run agy in a new HOME. It runs agy with the real HOME and an empty allow list for the session. The global MCP servers and other settings of the user can then load. The prompt tells agy not to use tools, and agy runs with `--sandbox` in an empty directory. The tool prints a line when this occurs.
 
+## Releases
+
+### v2026.11.0 (2026-11-27)
+
+- The gates read the Claude count from the first count line (#25).
+- The `review-cap-lifted` label lifts the Claude review cap (#41).
+- The queue keeps an owner label while it delays its record (#42).
+- The security review skips a docstring-only change (#43).
+- The "Added level 1 paths" table in `docs/STANDARD.md` has a row for mugham (#24).
+- The agent config variants and their letter cases are level 1. `CHANGELOG.md` is not a shared level 1 path (#23).
+
+To repin a project to this release, do these steps:
+
+1. In `.github/workflows/gates.yml`, change the SHA of the gates action to the full commit SHA of the tag `v2026.11.0`. Use the SHA, not the tag.
+2. If the project has the Claude review workflow, change the SHA of the gates action in `.github/workflows/claude-review.yml` to the same SHA. Then copy `gates/claude_review.py` of that SHA to `tools/claude_review.py`. This release changes that file (#25).
+3. Read the changes in `docs/STANDARD.md`. The standard is now Version 7.
+4. If a release step of the project copies `CHANGELOG.md` into the release notes, add `CHANGELOG.md` to `level1` of `.github/gates.json`. See [Shared categories](#shared-categories).
+
 ## Constitution template
 
 Each project constitution uses the sections and the exact governance block in [`docs/constitution-template.md`](docs/constitution-template.md). The block has version markers, so a check can compare it with the template.
