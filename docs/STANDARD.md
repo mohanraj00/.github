@@ -152,6 +152,7 @@ Added level 1 paths:
 | groundgate | `SPEC.md`, `conformance/` |
 | nookku | `SPEC.md`, the relay path, the record format |
 | entelos | `docs/contracts/`, the lifecycle specs (a first estimate) |
+| mugham | `catalog/schema/`, `docs/contracts/` |
 
 ## CI and GitHub settings
 
