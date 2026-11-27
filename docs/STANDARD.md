@@ -96,6 +96,8 @@ The shared categories are:
 - credentials, logins and RBAC;
 - named boundaries for untrusted input, commands, network and file paths.
 
+The gates compare a path with the shared lists and with the lists of the project with no regard to the letter case. A file system can ignore the letter case, and then a harness also loads `agents.md`.
+
 Each project names its boundary files. It does not list all of its source. A code reviewer can report that a security review is necessary. Then the author adds the `security-needed` label, and the gate requires the review.
 
 After a clean security review, a new push needs a new review only if the new commits touch a listed path.
@@ -120,6 +122,7 @@ These `.md` files are not docs:
 
 - agent instructions, `CONSTITUTION.md`, `docs/STANDARD.md` and skill files;
 - `SPEC.md` and contract files;
+- `CHANGELOG.md` at the root, because a release step reads it;
 - docs that a project test runs.
 
 ## Approvals
@@ -138,8 +141,9 @@ Filing a sanitized issue needs no approval.
 
 Level 1 paths in all projects:
 
-- `CONSTITUTION.md`, `docs/STANDARD.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`;
-- `.github/`, `.agents/`, `.claude/`, `.codex/`;
+- `CONSTITUTION.md`, `docs/STANDARD.md`, and `CHANGELOG.md` at the root;
+- `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` in each directory, with their `.local.md` and `.override.md` forms;
+- `.github/`, and in each directory `.agents/`, `.claude/`, `.codex/` and `.mcp.json`;
 - the gate tools;
 - dependency manifests and lock files.
 
@@ -163,6 +167,8 @@ Each repository has the same 4 required checks:
 | `cross-review` | Requires a clean review of the current head from the other harness | Shared gate |
 | `security-review` | Requires a security review if the trigger applies | Shared gate |
 | `acceptance` | Controls outside PRs, a reviewer disagreement and the `owner-needed` label | Shared gate |
+
+groundgate has a temporary exception: `outside-pr-paths` is a fifth required check. The check adds a control and removes none. The exception ends when groundgate pins the gates release that makes the agent config variants level 1 (mohanraj00/.github#23). Then groundgate removes the check, the required check setting and the `maintainer-approved` label. The `accepted` label of the PR and the owner approval of stage 2 do the work of that label. The next release of this standard removes this exception.
 
 - The gates run from the base branch, so a PR cannot change its own gate.
 - Package the gates as a composite action, so that the tools and the workflow cannot differ.
