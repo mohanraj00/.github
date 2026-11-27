@@ -49,13 +49,12 @@ A project does not list these paths in `.github/gates.json`.
 | Agent config | `.agents/`, `.claude/`, `.codex/` and `.mcp.json` in each directory | Yes | Yes |
 | Agent config | `.gemini/` in each directory | No | Yes |
 | Dependency manifests and lock files | The usual names of Go, Node, Python, Rust, Ruby, Helm and Nix, in each directory | Yes | Yes |
-| Release notes | `CHANGELOG.md` at the root | Yes | No |
 
 - The gates compare a path with these lists with no regard to the letter case and the Unicode form. A file system can ignore the letter case, and then a harness also loads `agents.md` or `.Claude/`. The same rule applies to `code`, `security_sources`, `boundaries` and `level1` of the project config.
 - The lists `not_security`, `generated` and `docstring_only` remove a control. Thus the gates compare them with the exact letter case.
 - The bare name of an agent config directory, for example `.claude`, is also on the list. A symbolic link with that name can point to a directory.
-- `CHANGELOG.md` is level 1 because the release step of two projects copies its text into the release notes. It is not security relevant: the release step reads it only as text, no tool runs it, and the owner reads the text before the merge. A `CHANGELOG.md` in a subdirectory is not on the list, because no release step reads it.
-- With these lists, a project does not need a local check of the agent paths for fork PRs. `tests/test_gate.py` compares the gates with the `outside-pr-paths` check of groundgate.
+- `CHANGELOG.md` is not on the shared lists. Most PRs of a project change it, and only some projects have a release step that reads it. If a release step of a project copies its text into the release notes, add `CHANGELOG.md` to `level1` of that project. Do not add it to `boundaries`: the release step reads it only as text, and no tool runs it.
+- With these lists, a project does not need a local check of the agent paths for fork PRs. `tests/test_gate.py` compares the gates with the `outside-pr-paths` check of groundgate. That check also protects `CHANGELOG.md`, so groundgate adds the `level1` entry before it removes the check.
 
 ### What each gate does
 

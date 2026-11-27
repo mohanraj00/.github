@@ -293,12 +293,14 @@ class ClassifyTest(unittest.TestCase):
         self.assertTrue(gate.on_list('requirementś.txt', ['requirements*.txt']))
         self.assertFalse(gate.on_list('requirements.md', ['requirements*.txt']))
 
-    def test_the_changelog_is_level1_and_not_security_relevant(self):
+    def test_the_changelog_is_level1_only_if_the_project_lists_it(self):
+        config = CONFIG | {'level1': CONFIG['level1'] + ['CHANGELOG.md']}
         for path in ('CHANGELOG.md', 'changelog.md'):
             with self.subTest(path=path):
-                result = gate.classify(CONFIG, [path])
+                self.assertEqual(gate.classify(CONFIG, [path]), {'security': [], 'level1': [], 'code': [], 'docs_only': True})
+                result = gate.classify(config, [path])
                 self.assertEqual((result['level1'], result['security'], result['docs_only']), ([path], [], False))
-        self.assertEqual(gate.classify(CONFIG, ['docs/CHANGELOG.md']),
+        self.assertEqual(gate.classify(config, ['docs/CHANGELOG.md']),
                          {'security': [], 'level1': [], 'code': [], 'docs_only': True})
 
     def test_a_name_that_is_near_an_agent_name_is_not_listed(self):
@@ -342,6 +344,9 @@ GROUNDGATE_CONFIG = CONFIG | {
                    'src/groundgate/extract/*', 'src/groundgate/adapters/*', 'src/groundgate/store/*',
                    'src/groundgate/review/*', 'src/groundgate/calibrate/*'],
     'level1': ['tools/claude_review.py', 'SPEC.md', 'conformance/*']}
+# CHANGELOG.md is not a shared level 1 path. groundgate adds this entry to "level1" when it pins the release of this
+# fix, because its release step reads the file.
+GROUNDGATE_REPIN = GROUNDGATE_CONFIG | {'level1': GROUNDGATE_CONFIG['level1'] + ['CHANGELOG.md']}
 OUTSIDE_PR_PATHS = re.compile(r'^(\.github/|CHANGELOG\.md$|SPEC\.md$|conformance/)'
                               r'|(^|/)\.(claude|codex)/|(^|/)\.mcp\.json$'
                               r'|(^|/)(CLAUDE|AGENTS)(\.local|\.override)?\.md$', re.IGNORECASE)
@@ -355,9 +360,11 @@ OUTSIDE_AGENT_PATHS = [
     'AGENTS.local.md', 'AGENTS.override.md', 'CLAUDE.local.md', 'CLAUDE.override.md',
     'docs/howto/CLAUDE.local.md', 'examples/irs-590a/AGENTS.override.md', 'tests/CLAUDE.override.md',
     'agents.md', 'Claude.md', 'CLAUDE.LOCAL.MD', 'docs/claude.Override.md', 'src/Agents.Local.md']
-# The other paths of the check. The gates make them level 1. They are security relevant only if the project lists them.
-OUTSIDE_OTHER_PATHS = ['CHANGELOG.md', 'changelog.md', 'SPEC.md', 'Spec.md', 'conformance/README.md',
-                       'conformance/vectors/a.json', 'Conformance/invalid/a.json']
+# The other paths of the check. The lists of the project make them level 1. They are security relevant only if the
+# project lists them as such.
+OUTSIDE_CHANGELOG_PATHS = ['CHANGELOG.md', 'changelog.md']
+OUTSIDE_OTHER_PATHS = OUTSIDE_CHANGELOG_PATHS + ['SPEC.md', 'Spec.md', 'conformance/README.md', 'conformance/vectors/a.json',
+                                                 'Conformance/invalid/a.json']
 # Paths that the check does not protect and that are not level 1 in groundgate.
 OUTSIDE_FREE_PATHS = ['README.md', 'LICENSE', 'docs/guide.md', 'docs/CHANGELOG.md', 'docs/SPEC.md', 'src/conformance/a.py',
                       'src/groundgate/fold.py', 'src/groundgate/cli.py', 'tests/test_cli.py', 'mcp.json', 'docs/x.mcp.json',
@@ -366,8 +373,9 @@ OUTSIDE_FREE_PATHS = ['README.md', 'LICENSE', 'docs/guide.md', 'docs/CHANGELOG.m
 
 
 class OutsidePrPathsTest(unittest.TestCase):
-    """The gates give the result of the outside-pr-paths check of groundgate, so groundgate can remove that check.
-    The gates also list paths that the check does not, for example the dependency manifests."""
+    """The gates give the result of the outside-pr-paths check of groundgate, so groundgate can remove that check
+    after it adds CHANGELOG.md to "level1". The gates also list paths that the check does not, for example the
+    dependency manifests."""
 
     def test_the_fixture_agrees_with_the_pattern_of_the_check(self):
         for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS:
@@ -380,8 +388,14 @@ class OutsidePrPathsTest(unittest.TestCase):
     def test_level1_is_the_result_of_the_check(self):
         for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS + OUTSIDE_FREE_PATHS:
             with self.subTest(path=path):
-                level1 = gate.classify(GROUNDGATE_CONFIG, [path])['level1']
+                level1 = gate.classify(GROUNDGATE_REPIN, [path])['level1']
                 self.assertEqual(bool(level1), bool(OUTSIDE_PR_PATHS.search(path)))
+
+    def test_only_the_changelog_needs_a_new_level1_entry(self):
+        for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS + OUTSIDE_FREE_PATHS:
+            with self.subTest(path=path):
+                level1 = gate.classify(GROUNDGATE_CONFIG, [path])['level1']
+                self.assertEqual(bool(level1), bool(OUTSIDE_PR_PATHS.search(path)) and path not in OUTSIDE_CHANGELOG_PATHS)
 
     def test_each_agent_path_of_the_check_is_security_relevant(self):
         for path in OUTSIDE_AGENT_PATHS:
@@ -389,17 +403,17 @@ class OutsidePrPathsTest(unittest.TestCase):
                 self.assertEqual(gate.classify(GROUNDGATE_CONFIG, [path])['security'], [path])
         for path in OUTSIDE_OTHER_PATHS:
             with self.subTest(path=path):
-                self.assertEqual(gate.classify(GROUNDGATE_CONFIG, [path])['security'], [])
+                self.assertEqual(gate.classify(GROUNDGATE_REPIN, [path])['security'], [])
 
     def test_a_fork_pr_fails_acceptance_for_each_path_of_the_check(self):
         for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS:
             with self.subTest(path=path):
-                passed, message, _ = check('acceptance', Fake(fork=True, files=[path]), config=GROUNDGATE_CONFIG)
+                passed, message, _ = check('acceptance', Fake(fork=True, files=[path]), config=GROUNDGATE_REPIN)
                 self.assertFalse(passed)
                 self.assertIn('protected paths', message)
         for path in OUTSIDE_FREE_PATHS:
             with self.subTest(path=path):
-                self.assertNotIn('protected paths', check('acceptance', Fake(fork=True, files=[path]), config=GROUNDGATE_CONFIG)[1])
+                self.assertNotIn('protected paths', check('acceptance', Fake(fork=True, files=[path]), config=GROUNDGATE_REPIN)[1])
 
 
 class SecurityTest(unittest.TestCase):
@@ -1811,7 +1825,7 @@ class AcceptanceTest(unittest.TestCase):
         self.assertIn('level 1', message)  # The owner still merges it.
 
     def test_a_fork_pr_with_an_agent_config_variant_needs_the_owner(self):
-        for path in ('.mcp.json', 'docs/CLAUDE.local.md', 'agents.override.md', 'sub/.Codex/config.toml', 'CHANGELOG.md'):
+        for path in ('.mcp.json', 'docs/CLAUDE.local.md', 'agents.override.md', 'sub/.Codex/config.toml'):
             with self.subTest(path=path):
                 passed, message, _ = check('acceptance', Fake(fork=True, files=[path]))
                 self.assertFalse(passed)

@@ -250,8 +250,7 @@ GEMINI_CONFIG = ['.gemini', '.gemini/*']
 SHARED_SECURITY = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md', 'docs/REVIEW.md', 'SECURITY.md']
                    + anywhere(AGENT_FILES) + anywhere(AGENT_CONFIG + GEMINI_CONFIG) + anywhere(MANIFESTS))
 # The level 1 paths in all projects. The project config adds its gate tools and its added level 1 paths.
-# A release step reads CHANGELOG.md, so it is level 1. It is not security relevant: see "Shared categories" in README.md.
-SHARED_LEVEL1 = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md', 'CHANGELOG.md']
+SHARED_LEVEL1 = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md']
                  + anywhere(INSTRUCTIONS) + anywhere(AGENT_CONFIG) + anywhere(MANIFESTS))
 # The category of each shared security pattern, in the order of the check.
 SHARED_CATEGORIES = [('GitHub config', ['.github/*']),

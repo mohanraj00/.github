@@ -122,7 +122,7 @@ These `.md` files are not docs:
 
 - agent instructions, `CONSTITUTION.md`, `docs/STANDARD.md` and skill files;
 - `SPEC.md` and contract files;
-- `CHANGELOG.md` at the root, because a release step reads it;
+- `CHANGELOG.md`, in a project that has it in `level1`;
 - docs that a project test runs.
 
 ## Approvals
@@ -141,7 +141,7 @@ Filing a sanitized issue needs no approval.
 
 Level 1 paths in all projects:
 
-- `CONSTITUTION.md`, `docs/STANDARD.md`, and `CHANGELOG.md` at the root;
+- `CONSTITUTION.md`, `docs/STANDARD.md`;
 - `AGENTS.md`, `CLAUDE.md` and `GEMINI.md` in each directory, with their `.local.md` and `.override.md` forms;
 - `.github/`, and in each directory `.agents/`, `.claude/`, `.codex/` and `.mcp.json`;
 - the gate tools;
@@ -158,6 +158,8 @@ Added level 1 paths:
 | entelos | `docs/contracts/`, the lifecycle specs (a first estimate) |
 | mugham | `catalog/schema/`, `docs/contracts/` |
 
+`CHANGELOG.md` is not a level 1 path in all projects. If a release step of a project reads `CHANGELOG.md`, the project adds it to `level1` in its `.github/gates.json`. groundgate and nookku add it when they pin the release with this rule.
+
 ## CI and GitHub settings
 
 Each repository has the same 4 required checks:
@@ -169,7 +171,7 @@ Each repository has the same 4 required checks:
 | `security-review` | Requires a security review if the trigger applies | Shared gate |
 | `acceptance` | Controls outside PRs, a reviewer disagreement and the `owner-needed` label | Shared gate |
 
-groundgate has a temporary exception: `outside-pr-paths` is a fifth required check. The check adds a control and removes none. The exception ends when groundgate pins the gates release that makes the agent config variants level 1 (mohanraj00/.github#23). Then groundgate removes the check, the required check setting and the `maintainer-approved` label. The `accepted` label of the PR and the owner approval of stage 2 do the work of that label. The next release of this standard removes this exception.
+groundgate has a temporary exception: `outside-pr-paths` is a fifth required check. The check adds a control and removes none. The exception ends when groundgate pins the gates release that makes the agent config variants level 1 (mohanraj00/.github#23). Then groundgate adds `CHANGELOG.md` to `level1`, and removes the check, the required check setting and the `maintainer-approved` label. The `accepted` label of the PR and the owner approval of stage 2 do the work of that label. The next release of this standard removes this exception.
 
 - The gates run from the base branch, so a PR cannot change its own gate.
 - Package the gates as a composite action, so that the tools and the workflow cannot differ.
