@@ -240,20 +240,23 @@ MANIFESTS = ['go.mod', 'go.sum', 'go.work', 'go.work.sum', 'package.json', 'pack
              'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'pyproject.toml', 'uv.lock', 'poetry.lock', 'Pipfile',
              'Pipfile.lock', 'requirements*.txt', 'setup.py', 'setup.cfg', 'Cargo.toml', 'Cargo.lock', 'Gemfile',
              'Gemfile.lock', 'Chart.lock', 'flake.lock']
-AGENT_FILES = ['AGENTS.md', 'CLAUDE.md', 'GEMINI.md', 'SKILL.md']
+# The instruction files that a harness loads from a checkout, with their local and override forms.
+INSTRUCTIONS = [name + form for name in ('AGENTS', 'CLAUDE', 'GEMINI') for form in ('.md', '.local.md', '.override.md')]
+AGENT_FILES = INSTRUCTIONS + ['SKILL.md']
+# The bare name is also on the list, because a symbolic link with that name can point to a directory.
+AGENT_CONFIG = [x for name in ('.agents', '.claude', '.codex') for x in (name, name + '/*')] + ['.mcp.json']
+GEMINI_CONFIG = ['.gemini', '.gemini/*']
 # The shared categories of the security review trigger. The project config adds its sources and boundary files.
 SHARED_SECURITY = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md', 'docs/REVIEW.md', 'SECURITY.md']
-                   + anywhere(AGENT_FILES) + anywhere(['.agents/*', '.claude/*', '.codex/*', '.gemini/*'])
-                   + anywhere(MANIFESTS))
+                   + anywhere(AGENT_FILES) + anywhere(AGENT_CONFIG + GEMINI_CONFIG) + anywhere(MANIFESTS))
 # The level 1 paths in all projects. The project config adds its gate tools and its added level 1 paths.
 SHARED_LEVEL1 = (['.github/*', 'CONSTITUTION.md', 'docs/STANDARD.md']
-                 + anywhere(['AGENTS.md', 'CLAUDE.md', 'GEMINI.md']) + anywhere(['.agents/*', '.claude/*', '.codex/*'])
-                 + anywhere(MANIFESTS))
+                 + anywhere(INSTRUCTIONS) + anywhere(AGENT_CONFIG) + anywhere(MANIFESTS))
 # The category of each shared security pattern, in the order of the check.
 SHARED_CATEGORIES = [('GitHub config', ['.github/*']),
                      ('standard document', ['CONSTITUTION.md', 'docs/STANDARD.md', 'docs/REVIEW.md', 'SECURITY.md']),
                      ('agent instructions', anywhere(AGENT_FILES)),
-                     ('agent config', anywhere(['.agents/*', '.claude/*', '.codex/*', '.gemini/*'])),
+                     ('agent config', anywhere(AGENT_CONFIG + GEMINI_CONFIG)),
                      ('dependency manifest', anywhere(MANIFESTS))]
 CONFIG_KEYS = ['code', 'security_sources', 'not_security', 'boundaries', 'level1', 'generated', 'docstring_only']
 
@@ -295,12 +298,19 @@ def match(path, patterns):
     return any(fnmatch(path, x) for x in patterns)
 
 
+def on_list(path, patterns):
+    """Return True if a pattern matches the path, also with no regard to the letter case and the Unicode form.
+    A harness on a file system that ignores the letter case also loads agents.md. Use this only for a list that adds
+    a control, because it matches more paths than match()."""
+    return match(path, patterns) or match(fold(path), [fold(x) for x in patterns])
+
+
 def classify(config, paths):
     """Return the listed paths of each kind. paths holds both ends of each move."""
-    security = [x for x in paths if match(x, SHARED_SECURITY) or match(x, config['boundaries'])
-                or (match(x, config['security_sources']) and not match(x, config['not_security']))]
-    level1 = [x for x in paths if match(x, SHARED_LEVEL1) or match(x, config['level1'])]
-    code = [x for x in paths if match(x, config['code'])]
+    security = [x for x in paths if on_list(x, SHARED_SECURITY) or on_list(x, config['boundaries'])
+                or (on_list(x, config['security_sources']) and not match(x, config['not_security']))]
+    level1 = [x for x in paths if on_list(x, SHARED_LEVEL1) or on_list(x, config['level1'])]
+    code = [x for x in paths if on_list(x, config['code'])]
     other = [x for x in paths if x not in security and x not in level1 and x not in code]
     return {'security': security, 'level1': level1, 'code': code,
             'docs_only': bool(paths) and len(other) == len(paths)}
@@ -309,9 +319,9 @@ def classify(config, paths):
 def category(config, path):
     """Return the category of a listed path, in the order of the classify check."""
     for name, patterns in SHARED_CATEGORIES:
-        if match(path, patterns):
+        if on_list(path, patterns):
             return name
-    return 'project boundary' if match(path, config['boundaries']) else 'project security source'
+    return 'project boundary' if on_list(path, config['boundaries']) else 'project security source'
 
 
 def described(config, paths):

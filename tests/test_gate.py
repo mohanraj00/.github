@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -241,7 +242,8 @@ class ConfigTest(unittest.TestCase):
 class ClassifyTest(unittest.TestCase):
     def test_the_shared_security_categories(self):
         for path in ('.github/workflows/ci.yml', 'docs/STANDARD.md', 'AGENTS.md', 'sub/dir/CLAUDE.md', 'x/.claude/settings.json',
-                     '.codex/config.toml', 'go.sum', 'web/package-lock.json', 'requirements-dev.txt', 'skills/a/SKILL.md'):
+                     '.codex/config.toml', 'go.sum', 'web/package-lock.json', 'requirements-dev.txt', 'skills/a/SKILL.md',
+                     '.gemini/settings.json', 'a/.gemini', 'docs/REVIEW.md', 'SECURITY.md'):
             with self.subTest(path=path):
                 self.assertEqual(gate.classify(CONFIG, [path])['security'], [path])
 
@@ -257,6 +259,63 @@ class ClassifyTest(unittest.TestCase):
                 self.assertEqual(gate.classify(CONFIG, [path])['level1'], [path])
         self.assertEqual(gate.classify(CONFIG, ['docs/guide.md', 'src/a.py'])['level1'], [])
 
+    def test_the_agent_config_variants_are_level1_and_security_relevant(self):
+        for path in ('.mcp.json', 'sub/.mcp.json', 'AGENTS.local.md', 'AGENTS.override.md', 'CLAUDE.local.md',
+                     'sub/dir/CLAUDE.override.md', 'GEMINI.local.md', 'a/GEMINI.override.md', 'sub/GEMINI.md',
+                     '.claude/settings.json', 'x/.claude/settings.local.json', '.codex/config.toml', 'a/b/.codex/config.toml',
+                     'a/.agents/skills/b/SKILL.md', '.claude', 'sub/.codex', '.agents'):
+            with self.subTest(path=path):
+                result = gate.classify(CONFIG, [path])
+                self.assertEqual((result['level1'], result['security'], result['docs_only']), ([path], [path], False))
+
+    def test_the_shared_paths_match_with_no_regard_to_letter_case(self):
+        for path in ('agents.md', 'Claude.md', 'CLAUDE.LOCAL.MD', 'sub/Agents.Override.md', 'gemini.md', '.MCP.json',
+                     '.Claude/settings.json', 'x/.CODEX/config.toml', '.GitHub/workflows/ci.yml', 'docs/standard.md',
+                     'constitution.md', 'Go.Mod', 'AGENTſ.md', 'sub/ＣLAUDE.md'):
+            with self.subTest(path=path):
+                result = gate.classify(CONFIG, [path])
+                self.assertEqual((result['level1'], result['security'], result['docs_only']), ([path], [path], False))
+        # U+212A is the Kelvin sign. macOS changes it to the letter K.
+        self.assertEqual(gate.classify(CONFIG, ['skills/a/SKILL.md'])['security'], ['skills/a/SKILL.md'])
+
+    def test_the_project_paths_match_with_no_regard_to_letter_case(self):
+        result = gate.classify(CONFIG, ['spec.md', 'TOOLS/gate.py', 'SRC/a.py', 'Src/Auth/b.txt'])
+        self.assertEqual(result['level1'], ['spec.md', 'TOOLS/gate.py'])
+        self.assertEqual(result['security'], ['TOOLS/gate.py', 'SRC/a.py', 'Src/Auth/b.txt'])
+        self.assertEqual(result['code'], ['SRC/a.py', 'Src/Auth/b.txt'])
+
+    def test_not_security_matches_only_the_exact_letter_case(self):
+        self.assertEqual(gate.classify(CONFIG, ['src/test_a.py'])['security'], [])
+        self.assertEqual(gate.classify(CONFIG, ['src/Test_a.py'])['security'], ['src/Test_a.py'])
+
+    def test_the_letter_case_rule_keeps_each_exact_match(self):
+        # NFKC joins the letter and the mark, so only the exact comparison matches this pattern.
+        self.assertTrue(gate.on_list('requirementś.txt', ['requirements*.txt']))
+        self.assertFalse(gate.on_list('requirements.md', ['requirements*.txt']))
+
+    def test_the_changelog_is_level1_only_if_the_project_lists_it(self):
+        config = CONFIG | {'level1': CONFIG['level1'] + ['CHANGELOG.md']}
+        for path in ('CHANGELOG.md', 'changelog.md'):
+            with self.subTest(path=path):
+                self.assertEqual(gate.classify(CONFIG, [path]), {'security': [], 'level1': [], 'code': [], 'docs_only': True})
+                result = gate.classify(config, [path])
+                self.assertEqual((result['level1'], result['security'], result['docs_only']), ([path], [], False))
+        self.assertEqual(gate.classify(config, ['docs/CHANGELOG.md']),
+                         {'security': [], 'level1': [], 'code': [], 'docs_only': True})
+
+    def test_a_name_that_is_near_an_agent_name_is_not_listed(self):
+        for path in ('CLAUDE.md.bak', 'MYAGENTS.md', 'AGENTS.local.txt', 'AGENTS.other.md', 'mcp.json', 'x.mcp.json',
+                     'docs/claude/notes.md', '.claudeignore', 'docs/.mcp.json.md'):
+            with self.subTest(path=path):
+                self.assertEqual(gate.classify(CONFIG, [path]), {'security': [], 'level1': [], 'code': [], 'docs_only': True})
+
+    def test_the_category_of_an_agent_path(self):
+        for path, name in (('.mcp.json', 'agent config'), ('a/.Claude/x', 'agent config'), ('.codex', 'agent config'),
+                           ('agents.override.md', 'agent instructions'), ('a/CLAUDE.local.md', 'agent instructions'),
+                           ('TOOLS/gate.py', 'project boundary')):
+            with self.subTest(path=path):
+                self.assertEqual(gate.category(CONFIG, path), name)
+
     def test_docs_only(self):
         self.assertTrue(gate.classify(CONFIG, ['README.md', 'docs/guide.md'])['docs_only'])
         for paths in (['README.md', 'src/a.go'], ['AGENTS.md'], ['SPEC.md'], []):
@@ -269,6 +328,92 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(check('classify', Fake(files=['README.md'], complete=False))[2], {'docs_only': 'false', 'code': 'true'})
         moved = {'path': 'docs/a.md', 'previous': 'src/a.go', 'lines': 1}
         self.assertEqual(check('classify', Fake(files=[moved]))[2]['code'], 'true')
+
+
+# The data of groundgate at the time of mohanraj00/.github#23: the lists of its .github/gates.json that classify() reads,
+# and the pattern of its outside-pr-paths check. That check uses the pattern with no regard to letter case.
+GROUNDGATE_CONFIG = CONFIG | {
+    'code': ['src/*', 'tests/*', 'conformance/*', 'examples/*', 'bench/*', 'spikes/*', 'tools/*', 'scripts/*', 'Makefile',
+             'SPEC.md', 'README.md', 'docs/guide.md', 'docs/schema.md', 'docs/howto/*', 'docs/design/packs.md',
+             'docs/design/store.md'],
+    'security_sources': ['src/groundgate/admit.py', 'src/groundgate/canonical.py', 'src/groundgate/fold.py',
+                         'src/groundgate/text.py'],
+    'not_security': [],
+    'boundaries': ['tools/*', 'scripts/*', 'src/groundgate/cli.py', 'src/groundgate/model.py', 'src/groundgate/pack.py',
+                   'src/groundgate/report.py', 'src/groundgate/escape.py', 'src/groundgate/read/*',
+                   'src/groundgate/extract/*', 'src/groundgate/adapters/*', 'src/groundgate/store/*',
+                   'src/groundgate/review/*', 'src/groundgate/calibrate/*'],
+    'level1': ['tools/claude_review.py', 'SPEC.md', 'conformance/*']}
+# CHANGELOG.md is not a shared level 1 path. groundgate adds this entry to "level1" when it pins the release of this
+# fix, because its release step reads the file.
+GROUNDGATE_REPIN = GROUNDGATE_CONFIG | {'level1': GROUNDGATE_CONFIG['level1'] + ['CHANGELOG.md']}
+OUTSIDE_PR_PATHS = re.compile(r'^(\.github/|CHANGELOG\.md$|SPEC\.md$|conformance/)'
+                              r'|(^|/)\.(claude|codex)/|(^|/)\.mcp\.json$'
+                              r'|(^|/)(CLAUDE|AGENTS)(\.local|\.override)?\.md$', re.IGNORECASE)
+# The GitHub config and the agent paths of the check. The gates make them level 1 and security relevant.
+OUTSIDE_AGENT_PATHS = [
+    '.github/workflows/ci.yml', '.github/CODEOWNERS', '.github/gates.json', '.GitHub/workflows/ci.yml',
+    '.claude/settings.json', '.claude/skills/a/SKILL.md', 'src/.claude/settings.local.json', '.Claude/commands/a.md',
+    '.codex/config.toml', 'docs/howto/.codex/config.toml', 'examples/.CODEX/config.toml',
+    '.mcp.json', 'tools/.mcp.json', 'src/groundgate/.mcp.json', '.MCP.JSON',
+    'AGENTS.md', 'src/groundgate/AGENTS.md', 'CLAUDE.md', 'docs/CLAUDE.md',
+    'AGENTS.local.md', 'AGENTS.override.md', 'CLAUDE.local.md', 'CLAUDE.override.md',
+    'docs/howto/CLAUDE.local.md', 'examples/irs-590a/AGENTS.override.md', 'tests/CLAUDE.override.md',
+    'agents.md', 'Claude.md', 'CLAUDE.LOCAL.MD', 'docs/claude.Override.md', 'src/Agents.Local.md']
+# The other paths of the check. The lists of the project make them level 1. They are security relevant only if the
+# project lists them as such.
+OUTSIDE_CHANGELOG_PATHS = ['CHANGELOG.md', 'changelog.md']
+OUTSIDE_OTHER_PATHS = OUTSIDE_CHANGELOG_PATHS + ['SPEC.md', 'Spec.md', 'conformance/README.md', 'conformance/vectors/a.json',
+                                                 'Conformance/invalid/a.json']
+# Paths that the check does not protect and that are not level 1 in groundgate.
+OUTSIDE_FREE_PATHS = ['README.md', 'LICENSE', 'docs/guide.md', 'docs/CHANGELOG.md', 'docs/SPEC.md', 'src/conformance/a.py',
+                      'src/groundgate/fold.py', 'src/groundgate/cli.py', 'tests/test_cli.py', 'mcp.json', 'docs/x.mcp.json',
+                      'CLAUDE.md.bak', 'MYCLAUDE.md', 'AGENTS.local.txt', 'AGENTS.other.md', 'docs/claude/notes.md',
+                      'docs/github/a.md', '.claudeignore']
+
+
+class OutsidePrPathsTest(unittest.TestCase):
+    """The gates give the result of the outside-pr-paths check of groundgate, so groundgate can remove that check
+    after it adds CHANGELOG.md to "level1". The gates also list paths that the check does not, for example the
+    dependency manifests."""
+
+    def test_the_fixture_agrees_with_the_pattern_of_the_check(self):
+        for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS:
+            with self.subTest(path=path):
+                self.assertTrue(OUTSIDE_PR_PATHS.search(path))
+        for path in OUTSIDE_FREE_PATHS:
+            with self.subTest(path=path):
+                self.assertFalse(OUTSIDE_PR_PATHS.search(path))
+
+    def test_level1_is_the_result_of_the_check(self):
+        for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS + OUTSIDE_FREE_PATHS:
+            with self.subTest(path=path):
+                level1 = gate.classify(GROUNDGATE_REPIN, [path])['level1']
+                self.assertEqual(bool(level1), bool(OUTSIDE_PR_PATHS.search(path)))
+
+    def test_only_the_changelog_needs_a_new_level1_entry(self):
+        for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS + OUTSIDE_FREE_PATHS:
+            with self.subTest(path=path):
+                level1 = gate.classify(GROUNDGATE_CONFIG, [path])['level1']
+                self.assertEqual(bool(level1), bool(OUTSIDE_PR_PATHS.search(path)) and path not in OUTSIDE_CHANGELOG_PATHS)
+
+    def test_each_agent_path_of_the_check_is_security_relevant(self):
+        for path in OUTSIDE_AGENT_PATHS:
+            with self.subTest(path=path):
+                self.assertEqual(gate.classify(GROUNDGATE_CONFIG, [path])['security'], [path])
+        for path in OUTSIDE_OTHER_PATHS:
+            with self.subTest(path=path):
+                self.assertEqual(gate.classify(GROUNDGATE_REPIN, [path])['security'], [])
+
+    def test_a_fork_pr_fails_acceptance_for_each_path_of_the_check(self):
+        for path in OUTSIDE_AGENT_PATHS + OUTSIDE_OTHER_PATHS:
+            with self.subTest(path=path):
+                passed, message, _ = check('acceptance', Fake(fork=True, files=[path]), config=GROUNDGATE_REPIN)
+                self.assertFalse(passed)
+                self.assertIn('protected paths', message)
+        for path in OUTSIDE_FREE_PATHS:
+            with self.subTest(path=path):
+                self.assertNotIn('protected paths', check('acceptance', Fake(fork=True, files=[path]), config=GROUNDGATE_REPIN)[1])
 
 
 class SecurityTest(unittest.TestCase):
@@ -1678,6 +1823,13 @@ class AcceptanceTest(unittest.TestCase):
         passed, message, _ = check('acceptance', fake)
         self.assertNotIn('protected paths', message)
         self.assertIn('level 1', message)  # The owner still merges it.
+
+    def test_a_fork_pr_with_an_agent_config_variant_needs_the_owner(self):
+        for path in ('.mcp.json', 'docs/CLAUDE.local.md', 'agents.override.md', 'sub/.Codex/config.toml'):
+            with self.subTest(path=path):
+                passed, message, _ = check('acceptance', Fake(fork=True, files=[path]))
+                self.assertFalse(passed)
+                self.assertIn('protected paths', message)
 
     def test_a_push_removes_the_ready_for_review_label_of_a_fork_pr(self):
         fake = Fake(fork=True, labels=['ready-for-review'], comments=[record('ready-for-review', head=OLD)])

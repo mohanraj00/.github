@@ -35,6 +35,27 @@ The keys of `.github/gates.json` are lists of `fnmatch` patterns. A `*` also mat
 
 The action holds the shared categories: the workflows, the agent instructions and settings, `docs/STANDARD.md`, and the dependency manifests and lock files.
 
+### Shared categories
+
+A project does not list these paths in `.github/gates.json`.
+
+| Category | Paths | Level 1 | Security relevant |
+|---|---|---|---|
+| GitHub config | `.github/` | Yes | Yes |
+| Standard documents | `CONSTITUTION.md`, `docs/STANDARD.md` | Yes | Yes |
+| Standard documents | `docs/REVIEW.md`, `SECURITY.md` | No | Yes |
+| Agent instructions | `AGENTS.md`, `CLAUDE.md` and `GEMINI.md`, with their `.local.md` and `.override.md` forms, in each directory | Yes | Yes |
+| Agent instructions | `SKILL.md` in each directory | No | Yes |
+| Agent config | `.agents/`, `.claude/`, `.codex/` and `.mcp.json` in each directory | Yes | Yes |
+| Agent config | `.gemini/` in each directory | No | Yes |
+| Dependency manifests and lock files | The usual names of Go, Node, Python, Rust, Ruby, Helm and Nix, in each directory | Yes | Yes |
+
+- The gates compare a path with these lists with no regard to the letter case and the Unicode form. A file system can ignore the letter case, and then a harness also loads `agents.md` or `.Claude/`. The same rule applies to `code`, `security_sources`, `boundaries` and `level1` of the project config.
+- The lists `not_security`, `generated` and `docstring_only` remove a control. Thus the gates compare them with the exact letter case.
+- The bare name of an agent config directory, for example `.claude`, is also on the list. A symbolic link with that name can point to a directory.
+- `CHANGELOG.md` is not on the shared lists. Most PRs of a project change it, and only some projects have a release step that reads it. If a release step of a project copies its text into the release notes, add `CHANGELOG.md` to `level1` of that project. Do not add it to `boundaries`: the release step reads it only as text, and no tool runs it.
+- With these lists, a project does not need a local check of the agent paths for fork PRs. `tests/test_gate.py` compares the gates with the `outside-pr-paths` check of groundgate. That check also protects `CHANGELOG.md`, so groundgate adds the `level1` entry before it removes the check.
+
 ### What each gate does
 
 - `cross-review` finds the builder from the first `agent:*` label of the linked issue, then from the branch prefix. A Claude-built PR, or a PR with no harness, needs a completed Codex code review of the current head. A Codex-built or agy-built PR needs a Claude workflow review of the current head with `Findings: 0`. The marker of the review must name the current merge base of the base branch and the head. A new commit on the base branch does not change the merge base, so the review stays valid. A base change of the PR stops the review. The `cross-reviewed` label with an approval record is the fallback for an agy or owner review. For the Codex app, `cross-review` fails if a user with the admin role posted more than 3 `@codex review` requests on the PR. The `review-cap-lifted` label with an approval record for the current head and base lifts this cap. A request from another user does not count.
@@ -112,6 +133,10 @@ The bump check and the copy check read the old file at the tip of the base branc
 #### Readers that the docstring check does not find (#43)
 
 The owner decision in `docstring_only` is the control. The reader scan is a second layer, and it cannot be complete: a Python file can read a docstring in more ways than a list of names can find. Thus add a path to `docstring_only` only if no tool, docs build, test or script of the project reads its docstrings. The docstring check finds the usual readers of a docstring or a source file by name. It does not find code that makes the name `__doc__`, a reader name or the path of a listed file at run time. For example, `repr(module)`, `str(module)` and an f-string of a module give the path of its source file at run time, and the scan cannot block `str`. An uncaught exception prints the path of its source file with no reader name, and a launcher can read that path at run time. A glob of only `*`, for example `cd src/auth && sh *`, also does not count, because `a * b` is a product in most languages. It also does not read installed packages, for example a metaclass or a docs tool of a library that the project uses. A change to a file that is not listed needs no security review, so a reader in such a file is not in the threat model of this check. The check reads the base branch when it runs. If a reader merges into the base branch after the check and before the merge of this PR, the check does not see it. The PR is level 1 if it changes a level 1 path, and then the owner reads the change before the merge. The `cross-review` gate does not change, and the PR stays level 1 if it changes a level 1 path.
+
+#### Agent files that are not on the shared list (#23)
+
+The shared list holds the instruction and config names of the harnesses that the standard names. It does not hold the files of a different harness, or a file that an instruction file imports. If a project has one of these files, add its path to `level1` and `boundaries` of `.github/gates.json`. A fork PR that changes one of these paths still needs the owner approval of stage 2.
 
 #### Comments that name @claude (#38)
 
