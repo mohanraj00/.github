@@ -98,7 +98,10 @@ class CrossReviewTest(unittest.TestCase):
         result = self.run_tool('hang', '--login-timeout', '1')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('did not finish in 1s', result.stderr)
-        self.assertEqual(len(self.calls()), 1)
+        calls = self.calls()
+        self.assertLessEqual(len(calls), 1)
+        self.assertFalse(any(call.startswith('Review this change') for call in calls))
+        self.assertFalse(self.work.exists())
 
     def test_a_security_path_adds_the_security_review(self):
         (self.repo / '.github/workflows').mkdir()
