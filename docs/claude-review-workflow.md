@@ -56,4 +56,4 @@ The `post` job posts the reason when the `gate` job stops a request.
 | `Stage 2 needs an owner approval of head <SHA> on base <branch> before a review. …` | A fork PR has no owner approval of the current head. | The owner reads the diff and approves. |
 | `The gate cannot get the merge base of head <SHA> and base <branch>.` | The API gave no merge base. | Run the failed job again. |
 | `The claude-review check runs only for an issue_comment event on a PR.` | The workflow ran for a different event. | Use the template triggers. |
-| `findings=unknown` in the marker | The count line does not agree with the review text. | Ask again. See [Known limits](known-limits.md#count-of-a-model-review). |
+| `findings=unknown` in the marker | The count line does not agree with the review text. | A new request for the same head does not start. Fix the findings, push, and ask again for the new head. If the review has no finding, the owner reviews the change and adds `cross-reviewed`. See [Known limits](known-limits.md#count-of-a-model-review). |
