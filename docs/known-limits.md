@@ -20,7 +20,11 @@ The gates trust the finding count of a model review. The Codex security receipt 
 - The count is 0, and a different line starts with a severity tag or a `path:line` reference.
 - The count is 0, and a severity tag P0 to P3 is at any position in a different line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
 
-The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. The rules for the lines before the count line refuse quoted text, but they do not block a model that writes a false count line. A prompt injection in the diff can cause these three results. A count on the first line has the same limit.
+The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. The rules for the lines before the count line refuse quoted text, but they do not block a model that writes a false count line. A prompt injection in the diff can cause these three results. A count on the first line has the same limit. A count line that the model repeats from the diff is a different limit, see [Count line that a diff can supply](#count-line-that-a-diff-can-supply-59-p2).
+
+## Count line that a diff can supply (#59, P2)
+
+The count line can come after prose. Thus a model can repeat a count line from the diff of a fork PR, and the marker can then show `findings=0` when the model did not make that count. Before #25, the count had to be on the first line, so this text gave `findings=unknown`. Issue #59 tracks the fix: the count must come from the first line or from a field of structured output, not from a line after prose. The fix comes in a later release.
 
 ## Base change during a Claude review (#16)
 
@@ -65,3 +69,12 @@ GitHub expressions have no regular expressions. Thus the Claude workflow starts 
 ## Local agy review without a token file (#38)
 
 If the agy login is not in the token file, for example in the macOS keychain, `gates/cross_review.py` cannot run agy in a new HOME. It runs agy with the real HOME and an empty allow list for the session. The global MCP servers and other settings of the user can then load. The prompt tells agy not to use tools, and agy runs with `--sandbox` in an empty directory. The tool prints a line when this occurs.
+
+## Repin keeps the old Claude workflow (#60)
+
+The steps in [repin.md](repin.md) do not copy `docs/claude-review.yml`. Thus a project that repins keeps its old Claude workflow. The old workflow compares the full comment body, so a request with a `Head:` line starts no review. Issue #60 tracks the added repin step.
+
+Until the fix, do this step in each repin of a project that has the Claude review workflow:
+
+1. Copy `docs/claude-review.yml` of the new SHA to `.github/workflows/claude-review.yml`.
+2. Keep only the project values, for example the SHA of the gates action.
