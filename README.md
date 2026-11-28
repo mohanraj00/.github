@@ -1,170 +1,65 @@
 # .github
-Shared project standard and CI gates
 
-## Shared gates
+Shared project standard and CI gates. Release: v2026.11.0.
 
-The composite action in [`gates/`](gates/action.yml) holds the gates `cross-review`, `security-review` and `acceptance` of [the standard](docs/STANDARD.md), and the `claude-review` check of the Claude review workflow. The tools are next to `action.yml`, so the workflow and the tools come from the same SHA. The tools use the Python standard library only, and they call only the GitHub API.
+This repository gives each project of the owner:
 
-### Adopt the gates in a project
+- [the project standard](docs/STANDARD.md): the build, review, approval and CI rules;
+- a composite GitHub Action, [`gates/`](gates/action.yml), with the required checks `cross-review`, `security-review` and `acceptance`, the `classify` step of `ci-ok`, and the `gate` job of the Claude review workflow;
+- workflow templates in `docs/*.yml`, and a [constitution template](docs/constitution-template.md).
 
-Use two PRs. The gates read `.github/gates.json` from the base branch, so the config must be on the base branch before the adoption PR.
+The maintainers of a project use it to adopt the gates and to repin them to each monthly release. The gates use the Python standard library only, and they call only the GitHub API.
 
-1. Merge a PR that adds only `.github/gates.json` with the project rules. The keys are below. Because the gate reads this file from the base branch, a PR cannot change the config of its own gate.
-2. Open the adoption PR. Copy [`docs/gates-caller.yml`](docs/gates-caller.yml) to `.github/workflows/gates.yml`. Replace the SHA of the gates action with a full SHA of this repository on `main`. Do not use a tag or a branch.
-3. Copy [`docs/gates-rerun.yml`](docs/gates-rerun.yml) to `.github/workflows/gates-rerun.yml`.
-4. Put the project jobs in the skeleton [`docs/ci-ok.yml`](docs/ci-ok.yml), and use the same SHA.
-5. If the project has the Claude review workflow, copy [`gates/claude_review.py`](gates/claude_review.py) to `tools/claude_review.py`. Use [`docs/claude-review.yml`](docs/claude-review.yml) as the workflow, at the path `.github/workflows/claude-review.yml`. Replace the SHA of the gates action in its `gate` job with the SHA of step 2. Its post job gives the `--kind` argument, and its diff starts at the merge base of the base branch and the head. The marker names this merge base. The gates accept a marker only if its run is an `issue_comment` run of this workflow on the default branch. Thus a workflow on a branch cannot make a marker that the gates accept. When you change the SHA of the gates action, copy `gates/claude_review.py` of the same SHA. The gates do not accept a `v1` marker, because it names no merge base.
-6. For the local agy review, use [`gates/cross_review.py`](gates/cross_review.py) at the SHA of step 2. Do not copy it to the project. Get a checkout of this repository at that SHA, then run `python3 -B <checkout>/gates/cross_review.py --base origin/main --work <new directory>` from the root of the project checkout. The tool reads `.github/gates.json` of the base revision to select the security review.
-7. Remove the old gate workflows and tools of the project, for example `tools/cross_review.py`, `pr-policy.yml` and `tools/pr_policy.py`. The gates also read the approval records of `pr_policy.py`.
-8. Merge the adoption PR. The checks `cross-review`, `security-review` and `acceptance` do not run on the adoption PR, because `pull_request_target` uses the workflow of the base branch. Only `ci-ok` runs on it.
-9. Copy [`docs/dependabot.yml`](docs/dependabot.yml) to `.github/dependabot.yml`. Do not change it.
-10. After the merge, in the main ruleset, require the 4 checks `ci-ok`, `cross-review`, `security-review` and `acceptance`. Do not require the 3 gate checks before the merge, because they cannot pass on the adoption PR.
+## Quickstart
 
-The keys of `.github/gates.json` are lists of `fnmatch` patterns. A `*` also matches `/`.
+You need `git`, `make` and Python 3.12 or later. CI uses the Python 3 of `ubuntu-24.04`. The quickstart uses no token and no network after the clone.
 
-| Key | Contents |
+1. Clone the repository:
+
+   ```bash
+   git clone https://github.com/mohanraj00/.github.git dot-github
+   ```
+
+2. Go into the checkout:
+
+   ```bash
+   cd dot-github
+   ```
+
+3. Run the tests. The last two lines are `Ran <N> tests in <T>s` and `OK`.
+
+   ```bash
+   make check
+   ```
+
+4. Classify some changed paths with the config of this repository. This is the same function that the gates use.
+
+   ```bash
+   python3 -B -c 'import sys; sys.path.insert(0, "gates"); import gate; print(gate.classify(gate.load_config(".github/gates.json"), sys.argv[1:]))' README.md gates/gate.py AGENTS.md
+   ```
+
+   The result is:
+
+   ```text
+   {'security': ['gates/gate.py', 'AGENTS.md'], 'level1': ['gates/gate.py', 'AGENTS.md'], 'code': ['gates/gate.py'], 'docs_only': False}
+   ```
+
+   `gates/gate.py` and `AGENTS.md` are level 1 and need a security review. If you give only `README.md`, the result has `'docs_only': True`.
+
+## Next docs
+
+| Task | Page |
 |---|---|
-| `version` | `1` |
-| `code` | The paths that run the project jobs. A path in a security or level 1 list also runs them. |
-| `security_sources` | The executable sources that are security relevant |
-| `not_security` | The paths of `security_sources` that are not security relevant, for example tests |
-| `boundaries` | The gate tools and the named boundary files. These are always security relevant. |
-| `level1` | The gate tools and the added level 1 paths of the project |
-| `generated` | The generated files. The fork line limit does not count them. |
-| `docstring_only` | The listed `.py` paths for the docstring check of `security-review`. The default is no path, and then the check is off. Add a path only if no tool of the project reads its docstrings. |
-
-The action holds the shared categories: the workflows, the agent instructions and settings, `docs/STANDARD.md`, and the dependency manifests and lock files.
-
-### Shared categories
-
-A project does not list these paths in `.github/gates.json`.
-
-| Category | Paths | Level 1 | Security relevant |
-|---|---|---|---|
-| GitHub config | `.github/` | Yes | Yes |
-| Standard documents | `CONSTITUTION.md`, `docs/STANDARD.md` | Yes | Yes |
-| Standard documents | `docs/REVIEW.md`, `SECURITY.md` | No | Yes |
-| Agent instructions | `AGENTS.md`, `CLAUDE.md` and `GEMINI.md`, with their `.local.md` and `.override.md` forms, in each directory | Yes | Yes |
-| Agent instructions | `SKILL.md` in each directory | No | Yes |
-| Agent config | `.agents/`, `.claude/`, `.codex/` and `.mcp.json` in each directory | Yes | Yes |
-| Agent config | `.gemini/` in each directory | No | Yes |
-| Dependency manifests and lock files | The usual names of Go, Node, Python, Rust, Ruby, Helm and Nix, in each directory | Yes | Yes |
-
-- The gates compare a path with these lists with no regard to the letter case and the Unicode form. A file system can ignore the letter case, and then a harness also loads `agents.md` or `.Claude/`. The same rule applies to `code`, `security_sources`, `boundaries` and `level1` of the project config.
-- The lists `not_security`, `generated` and `docstring_only` remove a control. Thus the gates compare them with the exact letter case.
-- The bare name of an agent config directory, for example `.claude`, is also on the list. A symbolic link with that name can point to a directory.
-- `CHANGELOG.md` is not on the shared lists. Most PRs of a project change it, and only some projects have a release step that reads it. If a release step of a project copies its text into the release notes, add `CHANGELOG.md` to `level1` of that project. Do not add it to `boundaries`: the release step reads it only as text, and no tool runs it.
-- With these lists, a project does not need a local check of the agent paths for fork PRs. `tests/test_gate.py` compares the gates with the `outside-pr-paths` check of groundgate. That check also protects `CHANGELOG.md`, so groundgate adds the `level1` entry before it removes the check.
-
-### What each gate does
-
-- `cross-review` finds the builder from the first `agent:*` label of the linked issue, then from the branch prefix. A Claude-built PR, or a PR with no harness, needs a completed Codex code review of the current head. A Codex-built or agy-built PR needs a Claude workflow review of the current head with `Findings: 0`. The marker of the review must name the current merge base of the base branch and the head. A new commit on the base branch does not change the merge base, so the review stays valid. A base change of the PR stops the review. The `cross-reviewed` label with an approval record is the fallback for an agy or owner review. For the Codex app, `cross-review` fails if a user with the admin role posted more than 3 `@codex review` requests on the PR. The `review-cap-lifted` label with an approval record for the current head and base lifts this cap. A request from another user does not count.
-- `security-review` passes if no listed path changed. Otherwise it needs a clean Codex security receipt, or the `security-reviewed` label with an approval record. A clean Claude security review is advisory. The gate writes a line about it, and the owner adds the `security-reviewed` label after the owner reads the review. A Codex security receipt with open findings stops the pass. After a clean review, a new push needs a new review only if the new commits touch a listed path. The `security-needed` label forces a review of the current head.
-- The copy check of `security-review` reads the old pin from `.github/workflows/gates.yml` of the base branch. A listed path passes with no review if it is an exact copy of its file in this repository at the new pin, by the Git blob SHA. The copy paths are the paths of "Adopt the gates in a project". The copy of `claude-review.yml` can differ from the template only in the SHA of the gates action, and only with the new pin. A listed path also passes if it changes only the SHA in its `mohanraj00/.github/gates@<SHA>` lines to the new pin. The compare API must show the new pin on `main` of this repository. If each listed path is proved, the check passes and writes each proved path. If the API gives an error, the copy check fails closed, and the PR needs a review.
-- The bump check of `security-review` applies only to a PR from `dependabot[bot]`. Each changed file must be a modified file with the same path and the same number of lines. Each changed line must be a `uses: <action>@<40-character SHA> # <version>` line at the base and at the head, with the same indent and action, and a new SHA. If each changed line is proved, the check passes with no review and writes each proved line. If a line or a file does not agree, or the API gives an error, the PR needs a review. The `security-needed` label stops the bump check. The PR stays level 1.
-- The docstring check of `security-review` is off by default. The owner turns it on for the paths in `docstring_only` of `.github/gates.json`, after the owner confirms that no tool of the project reads the docstrings of those paths. The gate reads the config from the base branch, so a PR cannot turn on the check for itself, and a change to the config is a security and level 1 change. Each listed path must match `docstring_only`. Then the check passes with no review if each listed path is a modified regular `.py` file (mode `100644` or `100755`, not a link) with the same path and the same Git file mode, and only the text of its existing docstrings changes. The bytes of the file must change, so a change of only the mode needs a review. A shell runs a `#!` line of another program, for example `#!/bin/sh`, and it runs an executable file with no `#!` line. A `#!` line of Python runs Python directly: a path to `python`, or `/usr/bin/env` and `python`, with one optional group of flags that take no argument. A line such as `#!/usr/bin/env -S sh -c ... python` names `python`, but it runs a shell. Thus a listed file with a `#!` line that is not a `#!` line of Python, or a listed file with mode `100755` and no `#!` line of Python, fails closed. A `.py` file with a `#!` line of another program is also not Python for the tree rules. The gate parses the file at the base and at the head with `ast`. It removes the docstring of each module, class and function, and the two trees must be equal. The file must be UTF-8, so equal text is equal bytes. Another source encoding, for example `unicode_escape`, fails closed. The source text of the file, with a mark in place of each docstring, must also be equal. Thus no byte outside the docstrings can change: no comment, space, backslash or line break. Also, no docstring can be added or removed. A traceback prints the source lines of the instruction that fails, for example for an uncaught exception. The instruction that makes a class has all the lines of the class statement, for example when `__init_subclass__` fails. Thus a changed docstring cannot be the docstring of a class, and its lines cannot have other code, except a comment after it. A line break `\r` with no `\n` also fails closed. Python also prints the source line of a compile warning, for example of an invalid escape such as `\q` in a docstring. Thus the head of a listed file must compile with no warning. A tool can read a comment and its physical line, for example `# nosec`, `# nosemgrep` or a `# /// script` block, so a comment change or a line move needs a review. The gate reads the listed files and the tree at the test merge commit of GitHub, and the parents of that commit must be the base tip and the head. Thus the check also reads a file that the base branch has and the head does not have. The gate reads the tree from the tarball of that commit. No file can read a docstring or a listed source file. A `.py` or `.pyw` file, or a file with a `#!` line of Python, is Python, and it must parse. Python can run a file with each name, so each other file that parses also gets the Python rules. A Python file must not read `__doc__` of an object, import `__doc__` from a module, or name `'__doc__'` in a string. It must not read `__file__`, `__spec__`, `__cached__`, `__path__` or `origin` of an object, for example `store.__file__`, or name one of these in a string. The same rule applies to the code object names `__code__`, `co_consts` and `co_code`, because `f.__code__.co_consts[0]` is the docstring of `f`. It also applies to `__dict__`, `__globals__`, `f_globals` and the other frame names, because the namespace of a module holds `__doc__`. A class pattern such as `case object(__doc__=text)` and a keyword with one of these names, or with `__doc__`, also count. It must not name a name of `DOC_NAMES`, or a name that contains a word of `DOC_WORDS`, for example `xdoctest` or `run_doctests`: a reader such as `getdoc`, `get_docstring`, `getsource` or `getabsfile`, a module such as `inspect`, `ast`, `importlib`, `pkgutil`, `runpy`, `pydoc` or `doctest`, a tool that reads docstrings such as `click`, `typer`, `fire`, `docopt` or `ply`, a docs generator such as `sphinx`, `pdoc`, `mkdocstrings` or `griffe`, a bytecode module such as `dis` or `marshal`, a module locator such as `modulefinder`, `find_module`, `imp`, `pyclbr`, `py_compile` or `pkg_resources`, an interpreter hook such as `addaudithook`, `settrace`, `setprofile` or `monitoring`, a standard API that returns a docstring such as `do_help` of `cmd` or the XML-RPC introspection, a test runner that prints test docstrings such as `unittest`, `nose2` or `trial`, a debugger, tracer or report tool that prints source lines such as `trace`, `pdb`, `rich`, `pytest` or `coverage`, a report tool that prints the source lines near a frame such as `cgitb`, `sentry_sdk` or `loguru`, a profiler that gives the source file of a function such as `cProfile`, `profile` or `pstats`, `help`, a namespace tool such as `vars`, `globals`, `locals`, `dir`, `getmembers`, `__getstate__`, `_getframe`, `gc` or `ctypes`, or `exec`, `eval` or `compile`. A string must not contain a word of `DOC_WORDS`, for example `pytest.main(["--doctest-modules"])`. A bare `__doc__` or `__file__` names its own module, so it counts only in a changed listed file. A script gets the path of its own source file from `sys.argv` or `sys.orig_argv`, so `argv` and `orig_argv` also count in a changed listed file. A warning gives the source file of its code, for example `WarningMessage.filename`. A log record also gives the source file of the code that logs, so the attribute `filename` of an object, for example `record.filename`, and the log fields `%(filename)s`, `{pathname}` and `${module}` count in each file. Thus `filename` and `warnings` also count in a changed listed file, and `catch_warnings`, `showwarning`, `formatwarning`, `captureWarnings` and `WarningMessage` count in each file. The names `co_filename`, `__traceback__` and `pathname`, and the module `traceback`, give the source file of a frame, so they count in each file. A stack dump also gives it, so each name that contains `traceback` or `faulthandler`, for example `dump_traceback`, counts. An exception hook and a log call with a traceback print it, so `excepthook`, `unraisablehook`, `exc_info`, `print_exc`, `format_exc` and the attribute `exception`, for example `logger.exception`, also count. A keyword with a name of `DOC_NAMES` also counts. A coroutine records the source file of the code that made it in `cr_origin`, and an `asyncio` task in `_source_traceback`, so these names and `set_coroutine_origin_tracking_depth` also count. A string that contains the file name of a changed listed file at any place also counts, for example `"cat src/auth/store.py | sh"`. A file system can ignore the case of a name or change its Unicode form, so the gate compares names in one case and one Unicode form (NFKC). Thus `"src/auth/STORE.PY"` also counts. A launcher can run a listed file with a shell glob, for example `sh src/auth/*.py`. Thus a word with `*`, `?`, `[...]` or `{a,b}` counts if its last part can match the name of a changed listed file. A list mark such as `* item`, a block comment mark such as `/*`, and a word of only `*`, for example in `a * b`, do not count. A Windows volume can give a file a short name, for example `LONGFI~1.PY`, so each short name in a file or a string, a name character with `~` and a digit, also counts. A metaclass gets the namespace of a class, and the namespace holds `__doc__`. A subclass gets the metaclass of its base with no `metaclass` keyword. Thus a `metaclass` keyword, `__prepare__`, the helpers `add_metaclass`, `with_metaclass`, `new_class` and `prepare_class`, a class with a base of `type` or of a name that ends with `Meta`, and a call with three arguments to such a name, for example `type("Meta", (type,), ns)`, count in each file. A name can be a second name for a metaclass, for example `from builtins import type as factory` or `factory = type(int)`. Thus each use of `type`, of a name that ends with `Meta`, of `builtins` or of `__class__`, and a base that is a call, also count. This includes `type(x)`. Another program can read a comment of a Python file, for example `#include` of `cpp`, so the comments of a Python file get the word and file name rules of a file that is not Python. A file that is not Python must also not contain a word of `DOC_WORDS`, for example `__doc__`, `__file__`, `inspect`, `doctest`, `sphinx-build` or `automodule`, or the file name of a changed listed file. A shell can run Python, so each name of the Python rules is also a word of `DOC_WORDS`, at word boundaries. A name with other leading or trailing underscores is the same reader, for example `__dir__` for `dir`, so both rules ignore these underscores. `functools.WRAPPER_ASSIGNMENTS` holds the string `'__doc__'`, and `wraps`, `update_wrapper` and `cached_property` copy a docstring, so they also count. A `__setattr__` or `__set__` method, and an assignment to `__doc__`, can get a copied docstring, so they count in each file. Python copies each docstring into the bytecode cache, for example `__pycache__/store.cpython-314.pyc`. Thus `__pycache__`, `.pyc`, `.pyo`, `pycache_prefix`, `cache_from_source` and `cache_tag` count in each file, but not in an ignore file such as `.gitignore`, because no program runs it. A file system can ignore case, for example for `PYDOC src.auth.store`, so the words of `DOC_WORDS` match in each case. Thus a doc or a script that contains `help`, `dir`, `vars` or `exec` as a word fails closed. A shell can run a doc, so the word rules also apply to `.md`, `.rst` and `.txt` files. Only the config files in `PATH_DATA`, such as `.github/gates.json` and `CODEOWNERS`, can name a listed file, because they list paths. A file of `PATH_DATA` that parses as Python can have only literal values, for example JSON. A link in the tree gets the content of its target, and the gate reads it with the rules of the link path. A file or a link with the same bytes as a changed listed file is a second name for it, so it fails closed. A checkout can change the line breaks with no attribute, for example by `core.autocrlf`, so the gate compares the bytes with each `\r\n` as `\n`. The gate cannot read a compressed file, and Python runs a zip file, for example a `.pyz` app. A file that is not text can hold a packed reader, for example zlib data. Thus each file of the tree must be UTF-8 text, or UTF-16 or UTF-32 text with a BOM, so an image also fails closed. A decoder can unpack a reader from a text file, so the decoders such as `base64`, `zlib`, `codecs`, `pickle`, `gunzip`, `xxd`, `openssl` and `tar`, and the transcoders such as `iconv`, `uconv` and `recode`, are also in `DOC_NAMES`. Text in another encoding can hide a reader, for example in UTF-7 or an EBCDIC code page. Thus each encoding of a Python decode must be a literal UTF-8, ASCII or Latin-1 name, for example in `data.decode("utf-7")`, `str(data, codec)`, `open(path, encoding="cp037")` or `path.read_text(codec)`. A Python string must not name UTF-7 or another encoding of the rule below, and a bytes string gets the UTF-16 and UTF-32 forms of a file. The module `encodings` also counts. A file that is not Python, or a comment, also must not name UTF-7, a Unicode escape, EBCDIC or a `cp` or `ibm` code page. Thus a file with zip data at any place, or a gzip, bzip2, xz, zstd or 7z file, fails closed. The word rules also read a file with no NUL bytes, and they decode a file with a NUL byte or a UTF-16 BOM in each UTF-16 and UTF-32 byte order, for example a PowerShell script with no BOM. A file system can ignore case or change the Unicode form of a name, so a link with no target file in the tree fails closed, for example `payload -> SRC/AUTH/STORE.PY`. Two paths of the tree that are equal in one case and one Unicode form also fail closed. A link to a folder, a link out of the tree, or a hard link fails closed. A link to a folder gives a second name to each file in it, for example `payload/store.py` for `payload -> src/auth`. The Git tree of the head must agree with the tarball: a file that the tarball omits, for example by `export-ignore`, a submodule, or a truncated tree fails closed. Each file and link of the tarball must also have the blob SHA of the Git tree, so `export-subst` or an `eol` rule fails closed. A checkout can also write other bytes than the blob, so a Git LFS pointer fails closed. A `.gitattributes` file with `filter`, `working-tree-encoding`, `ident` or `lfs`, and a `.lfsconfig` file, also fail closed. If a step fails, or the tree is larger than the limits in `gates/gate.py`, the check fails closed.
-- `claude-review` is the `gate` job of the Claude review workflow. It runs before the `review` job, with no environment and no secret. For a fork PR, it requires the stage 2 owner approval of the current head and base, with the same code as `acceptance`. It stops a request if a trusted marker of the same kind names the current head and merge base, or if the PR has 3 trusted markers of the same kind. The `review-cap-lifted` label with an approval record for the current head and base lifts the cap of 3 markers. It does not lift the rule of one marker for each head and merge base. The `gate` job does not remove a stale label, because it has read permissions only. The post job then posts the reason, and the job log has it. On a pass, it gives the head, the base and the merge base to the `review` job. The `review` job fails if the PR head, base or merge base changed after the gate. The workflow has a concurrency group for each PR, so the requests on one PR run one at a time. A new pending request replaces an older pending request, and the older request posts no comment.
-- `acceptance` applies stage 1 and stage 2 of "Fork PRs" to a fork PR. Stage 2 needs an owner approval of the current head and base: an admin review with the state `APPROVED` for the head, or the `ready-for-review` label with its approval record. The latest review of each user decides, and a dismissed review does not count. For each PR, it fails if a level 1 path changed or if the PR has the `owner-needed` label. Then the owner merges the PR with the admin bypass, and auto-merge cannot merge it. A push removes the `ready-for-review` label from a fork PR.
-
-When a user with the admin role adds `accepted`, `ready-for-review`, `security-reviewed`, `cross-reviewed` or `review-cap-lifted` to a PR, the gate posts an approval record for that head and base. A label from a triage or write user gets no record. For a fork PR, an admin must add the `accepted` label of the linked issue. A label without a record for the current head and base is not valid, and the gate removes it. The run of the labeled event posts the record, and the Actions queue can delay that run. Thus an admin label is pending while no record of the label is newer than its labeled event, for at most 6 hours. A pending label is not valid, but the gate does not remove it. A record for a different head or base, or 6 hours with no record, makes the label stale.
-
-If the API gives an error, or a receipt has an unknown format, the gate fails. It does not pass.
-
-Only an admin can clear the blocking labels `owner-needed`, `security-needed` and the `decision` label of a linked issue. If another user removes one of them, the gate still applies it.
-
-### Known limits
-
-This section holds each known limit of the gates. A finding that the stop rule of the standard does not fix also goes here, with its reason. The threat model of the standard excludes an actor with write access.
-
-#### Owner login
-
-The agents use the owner login. Thus GitHub cannot tell if the owner or an agent added a label. The labels `accepted`, `security-reviewed`, `cross-reviewed`, `review-cap-lifted` and `ready-for-review` depend on the rule that agents never add them.
-
-#### Count of a model review
-
-The gates trust the finding count of a model review. The Codex security receipt also comes from a model that reads the diff, and the gate accepts it. The count line of a Claude review is the first line that is exactly `Findings: N`, with no indent. The model can write a progress line before it. The marker gives `findings=unknown` if no line is a count line, or if the text does not agree with the count:
-
-- A line before the count line has a character that is not plain prose. The permitted characters are letters, digits, spaces and `.,:;'’()/?!%+@-`. An apostrophe is permitted only in a word, for example `I'll`. A double quote is not permitted. Markdown and HTML have many forms of quoted text, for example code fences, code spans, quote lines and HTML tags. A list of forms to refuse can miss a form, so the gate permits only these characters. A backtick, `<`, `>`, `~`, `[` or `|` before the count line thus gives `findings=unknown`.
-- A line before the count line starts with a list marker (`-`, `+`, or a number and `.` or `)`). The count line can then be a lazy continuation of that list item.
-- The last text line before the count line does not end with `.`, `!` or `?`. A line that ends with a colon or with no mark can introduce the count line as a quote.
-- `INCOMPLETE REVIEW` is on a different line.
-- A different `Findings: N` line gives a different count.
-- The count is 0, and a different line starts with a severity tag or a `path:line` reference.
-- The count is 0, and a severity tag P0 to P3 is at any position in a different line. Thus a clean review that writes "no P1 defect" also gives `findings=unknown`.
-
-The check reads the text in NFKC form with no format characters. Thus a full-width or a zero-width character cannot hide a signal. This check blocks only a count that does not agree with the text. It does not block prose that describes a defect with no severity tag and no `path:line` reference. It does not block a model that omits a finding. The rules for the lines before the count line refuse quoted text, but they do not block a model that writes a false count line. A prompt injection in the diff can cause these three results. A count on the first line has the same limit.
-
-#### Events that do not start the gates
-
-A change to the labels of a linked issue does not start the gates. Edit the PR, or run the failed jobs again.
-
-A review does not start the gates. For a fork PR, the `pull_request_review` event runs the workflow file of the PR with a read-only token, so the gates do not use it. After you approve a fork PR with the Approve button, run the failed `acceptance` job again, for example with `gh run rerun <run-id> --failed`. The `ready-for-review` label starts the gates, so it needs no rerun.
-
-GitHub Actions has no event for a resolved review thread. If you resolve the last Codex thread without a push, run the failed `cross-review` job again, for example with `gh run rerun <run-id> --failed`.
-
-#### Base change during a Claude review (#16)
-
-If the base of a PR changes while a Claude review runs, the run does not stop. It uses the OAuth token to the end and posts a review of the old diff. Its marker counts toward the cap of 3. The gates accept the marker only if it names the current merge base. A user with write access can do this on each PR, and the threat model excludes that actor. A fork author can also change the base, but a fork run starts only after the owner approval of the head and base. Thus a fork author can make the one run of an approval useless, but cannot make a marker that a gate accepts.
-
-#### Burst of Claude review requests (#19, item 2)
-
-The `gate` job and the concurrency group limit the Claude runs for each PR. A user with write access can still post requests on many PRs in a short time. Each run uses the OAuth token for up to 30 minutes. The threat model excludes that actor, so the gates do not limit the runs across PRs.
-
-#### Some pin lines unchanged in the copy check (#22, P2)
-
-If a PR changes only some of the pin lines in `gates.yml`, the copy check uses the SHA of the changed lines as the new pin. The unchanged lines keep the old SHA, so some gates run at the old SHA after the merge. The next copy check then finds two pins on the base branch, and it fails closed. The stop rule does not fix this now, because its severity is P2. The PR is level 1, so the owner reads the pin lines before the merge.
-
-#### Pin to an older commit of main (#22, P3)
-
-The copy check accepts each new pin that is on `main` of this repository, also a commit before the old pin. Thus a PR can move a project to an older release of the gates with no security review. The stop rule does not fix this now, because its severity is P3. The PR is level 1, so the owner decides each pin change before the merge.
-
-#### Codex request after a pass (#29, P2)
-
-A request comment does not start the gates, and `gates-rerun` runs only a failed job again. Thus if `cross-review` passed for a head, a fourth `@codex review` request for the same head does not change the check. After a push, the gates run again and read the count, so the next head fails at the cap. The stop rule does not fix this now, because its severity is P2 and only the owner login counts as a requester. The standard also allows one request for each head.
-
-#### SHA of an action bump (#28)
-
-The bump check does not prove that the new SHA is a release of the named action. GitHub also shows a commit of a fork under the name of the parent repository. Only an actor with write access can push to a Dependabot branch, and the threat model excludes that actor. The PR is level 1, so the owner reads each SHA and its release before the merge.
-
-#### Base of an action bump (#28)
-
-The bump check and the copy check read the old file at the tip of the base branch, not at the merge base. If a different PR changes a workflow on the base branch after Dependabot opens its PR, the bump check fails. The gate then needs a security review. This failure is safe. To prove the bump again, comment `@dependabot rebase` on the PR.
-
-#### Readers that the docstring check does not find (#43)
-
-The owner decision in `docstring_only` is the control. The reader scan is a second layer, and it cannot be complete: a Python file can read a docstring in more ways than a list of names can find. Thus add a path to `docstring_only` only if no tool, docs build, test or script of the project reads its docstrings. The docstring check finds the usual readers of a docstring or a source file by name. It does not find code that makes the name `__doc__`, a reader name or the path of a listed file at run time. For example, `repr(module)`, `str(module)` and an f-string of a module give the path of its source file at run time, and the scan cannot block `str`. An uncaught exception prints the path of its source file with no reader name, and a launcher can read that path at run time. A glob of only `*`, for example `cd src/auth && sh *`, also does not count, because `a * b` is a product in most languages. It also does not read installed packages, for example a metaclass or a docs tool of a library that the project uses. A change to a file that is not listed needs no security review, so a reader in such a file is not in the threat model of this check. The check reads the base branch when it runs. If a reader merges into the base branch after the check and before the merge of this PR, the check does not see it. The PR is level 1 if it changes a level 1 path, and then the owner reads the change before the merge. The `cross-review` gate does not change, and the PR stays level 1 if it changes a level 1 path.
-
-#### Agent files that are not on the shared list (#23)
-
-The shared list holds the instruction and config names of the harnesses that the standard names. It does not hold the files of a different harness, or a file that an instruction file imports. If a project has one of these files, add its path to `level1` and `boundaries` of `.github/gates.json`. A fork PR that changes one of these paths still needs the owner approval of stage 2.
-
-#### Comments that name @claude (#38)
-
-GitHub expressions have no regular expressions. Thus the Claude workflow starts its `gate` job for each comment of a writer that contains `@claude`. The `gate` job reads the first line, and for other text it sets no kind, so the `review` and `post` jobs skip. Such a comment uses the concurrency group of the requests. Thus a comment of a writer that names `@claude` can replace a pending request, and that request then posts no comment. Only an actor with write access can do this, and the threat model excludes that actor. Ask again if a request gets no comment.
-
-#### Local agy review without a token file (#38)
-
-If the agy login is not in the token file, for example in the macOS keychain, `gates/cross_review.py` cannot run agy in a new HOME. It runs agy with the real HOME and an empty allow list for the session. The global MCP servers and other settings of the user can then load. The prompt tells agy not to use tools, and agy runs with `--sandbox` in an empty directory. The tool prints a line when this occurs.
-
-## Releases
-
-### v2026.11.0 (2026-11-27)
-
-- The gates read the Claude count from the first count line (#25).
-- The `review-cap-lifted` label lifts the Claude review cap (#41).
-- The queue keeps an owner label while it delays its record (#42).
-- The security review skips a docstring-only change (#43).
-- The "Added level 1 paths" table in `docs/STANDARD.md` has a row for mugham (#24).
-- The agent config variants and their letter cases are level 1. `CHANGELOG.md` is not a shared level 1 path (#23).
-
-To repin a project to this release, do these steps. Each pin of the gates action in each workflow of the project uses the same SHA.
-
-1. In `.github/workflows/gates.yml`, change the SHA of the gates action to the full commit SHA of the tag `v2026.11.0`. Use the SHA, not the tag.
-2. In the `check: classify` step of `.github/workflows/ci.yml`, change the SHA of the gates action to the same SHA. This step selects the project jobs. If it keeps the old SHA, it uses the old path lists.
-3. If the project has the Claude review workflow, change the SHA of the gates action in `.github/workflows/claude-review.yml` to the same SHA. Then copy `gates/claude_review.py` of that SHA to `tools/claude_review.py`. This release changes that file (#25).
-4. Read the changes in `docs/STANDARD.md`. The standard is now Version 7.
-5. If a release step of the project copies `CHANGELOG.md` into the release notes, add `CHANGELOG.md` to `level1` of `.github/gates.json`. See [Shared categories](#shared-categories).
-
-## Constitution template
+| Add the gates to a project | [Adopt the gates](docs/adopt.md) |
+| Move a project to a new release | [Repin to a release](docs/repin.md) |
+| Ask Claude to review a PR | [Claude review workflow](docs/claude-review-workflow.md) |
+| Review a PR with agy on your computer | [Local agy review](docs/agy-review.md) |
+| Read a gate result or a failure text | [Gate checks](docs/checks.md) |
+| Find a known limit of the gates | [Known limits](docs/known-limits.md) |
+| Read the changes of each release | [CHANGELOG.md](CHANGELOG.md) |
 
 Each project constitution uses the sections and the exact governance block in [`docs/constitution-template.md`](docs/constitution-template.md). The block has version markers, so a check can compare it with the template.
+
+## Known limits
+
+The known limits of the gates are in [docs/known-limits.md](docs/known-limits.md).
