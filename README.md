@@ -157,12 +157,13 @@ If the agy login is not in the token file, for example in the macOS keychain, `g
 - The "Added level 1 paths" table in `docs/STANDARD.md` has a row for mugham (#24).
 - The agent config variants and their letter cases are level 1. `CHANGELOG.md` is not a shared level 1 path (#23).
 
-To repin a project to this release, do these steps:
+To repin a project to this release, do these steps. Each pin of the gates action in each workflow of the project uses the same SHA.
 
 1. In `.github/workflows/gates.yml`, change the SHA of the gates action to the full commit SHA of the tag `v2026.11.0`. Use the SHA, not the tag.
-2. If the project has the Claude review workflow, change the SHA of the gates action in `.github/workflows/claude-review.yml` to the same SHA. Then copy `gates/claude_review.py` of that SHA to `tools/claude_review.py`. This release changes that file (#25).
-3. Read the changes in `docs/STANDARD.md`. The standard is now Version 7.
-4. If a release step of the project copies `CHANGELOG.md` into the release notes, add `CHANGELOG.md` to `level1` of `.github/gates.json`. See [Shared categories](#shared-categories).
+2. In the `check: classify` step of `.github/workflows/ci.yml`, change the SHA of the gates action to the same SHA. This step selects the project jobs. If it keeps the old SHA, it uses the old path lists.
+3. If the project has the Claude review workflow, change the SHA of the gates action in `.github/workflows/claude-review.yml` to the same SHA. Then copy `gates/claude_review.py` of that SHA to `tools/claude_review.py`. This release changes that file (#25).
+4. Read the changes in `docs/STANDARD.md`. The standard is now Version 7.
+5. If a release step of the project copies `CHANGELOG.md` into the release notes, add `CHANGELOG.md` to `level1` of `.github/gates.json`. See [Shared categories](#shared-categories).
 
 ## Constitution template
 
